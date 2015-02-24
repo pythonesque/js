@@ -9,6 +9,7 @@ pub enum Tok<'a> {
     BooleanLiteral(&'a str),
     OctalLiteral(&'a str),
     StringLiteral(&'a str),
+    NumericLiteral(f64),
 
     Dot,
     Ellipsis,

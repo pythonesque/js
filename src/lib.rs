@@ -10,6 +10,8 @@ use ast::Tok::*;
 
 use std::char;
 use std::collections::HashSet;
+use std::error::FromError;
+use std::num::{self, FromStrRadix, ParseFloatError};
 
 mod ast;
 
@@ -83,6 +85,13 @@ pub enum Error {
     ExpectedIdent,
     UnterminatedStringLiteral,
     UnexpectedEOF,
+    ParseFloat(ParseFloatError),
+}
+
+impl FromError<ParseFloatError> for Error {
+    fn from_error(err: ParseFloatError) -> Self {
+        Error::ParseFloat(err)
+    }
 }
 
 pub type PRes<T> = Result<T, Error>;
@@ -567,6 +576,167 @@ impl<'a> Ctx<'a> {
         })
     }
 
+    fn scan_hex_literal(&mut self, start: Pos) -> PRes<Token<'a>> {
+        let begin = self.index;
+        while let Some((ch, rest)) = self.rest.slice_shift_char() {
+            if let None = hex_digit(ch) { break }
+            self.index += 1;
+            self.rest = rest;
+        }
+        if begin == self.index { return Err(Error::UnexpectedToken) }
+        if let Some(ch) = self.rest.chars().next() {
+            if is_identifier_start(ch) { return Err(Error::UnexpectedToken) }
+        }
+        Ok(Token {
+            ty: NumericLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 16))),
+            line_number: self.line_number,
+            line_start: self.line_start,
+            start: start,
+            end: self.index,
+        })
+    }
+
+    fn scan_binary_literal(&mut self, start: Pos) -> PRes<Token<'a>> {
+        let begin = self.index;
+        while let Some(('0'...'1', rest)) = self.rest.slice_shift_char() {
+            self.index += 1;
+            self.rest = rest;
+        }
+        // only 0b or 0B
+        if begin == self.index { return Err(Error::UnexpectedToken) }
+        if let Some(ch) = self.rest.chars().next() {
+            if is_identifier_start(ch) || is_decimal_digit(ch) { return Err(Error::UnexpectedToken) }
+        }
+        Ok(Token {
+            ty: NumericLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 2))),
+            line_number: self.line_number,
+            line_start: self.line_start,
+            start: start,
+            end: self.index,
+        })
+    }
+
+    fn scan_octal_literal(&mut self, prefix: char, rest: &'a str, start: Pos) -> PRes<Token<'a>> {
+        let octal = match octal_digit(prefix) { Some(_) => true, _ => false };
+        let begin = if octal { self.index } else { self.index + 1 };
+
+        self.index += 1;
+        self.rest = rest;
+
+        while let Some((ch, rest)) = self.rest.slice_shift_char() {
+            if let None = octal_digit(ch) { break }
+            self.index += 1;
+            self.rest = rest;
+        }
+        // only 0o or 0O
+        if begin == self.index { return Err(Error::UnexpectedToken) }
+        if let Some(ch) = self.rest.chars().next() {
+            if is_identifier_start(ch) || is_decimal_digit(ch) { return Err(Error::UnexpectedToken) }
+        }
+        Ok(Token {
+            ty: NumericLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 8))),
+            line_number: self.line_number,
+            line_start: self.line_start,
+            start: start,
+            end: self.index,
+        })
+    }
+
+    fn is_implicit_octal_literal(&mut self) -> bool {
+        for ch in self.rest.chars().skip(1) {
+            if let '8'...'9' = ch { return false; }
+            if let None = octal_digit(ch) { return true; }
+        }
+        true
+    }
+
+    fn scan_numeric_literal(&mut self, ch: char, rest: &'a str) -> PRes<Token<'a>> {
+        let start = self.index;
+        let number = self.rest;
+
+        if ch != '.' {
+            self.index += 1;
+            self.rest = rest;
+
+            if ch == '0' {
+                match self.rest.slice_shift_char() {
+                    Some(('x', rest)) | Some(('X', rest)) => {
+                        self.index += 1;
+                        self.rest = rest;
+                        return self.scan_hex_literal(start);
+                    },
+                    Some(('b', rest)) | Some(('B', rest)) => {
+                        self.index += 1;
+                        self.rest = rest;
+                        return self.scan_binary_literal(start);
+                    },
+                    Some((ch @ 'o', rest)) | Some((ch @ 'O', rest)) => {
+                        return self.scan_octal_literal(ch, rest, start);
+                    },
+                    Some((ch, rest)) => if let Some(_) = octal_digit(ch) {
+                        if self.is_implicit_octal_literal() {
+                            return self.scan_octal_literal(ch, rest, start);
+                        }
+                    },
+                    _ => {}
+                }
+            }
+
+            while let Some((ch, rest)) = self.rest.slice_shift_char() {
+                if !is_decimal_digit(ch) { break }
+                self.index += 1;
+                self.rest = rest;
+            }
+        }
+
+        if let Some(('.', rest)) = self.rest.slice_shift_char() {
+            self.index += 1;
+            self.rest = rest;
+
+            while let Some((ch, rest)) = self.rest.slice_shift_char() {
+                if !is_decimal_digit(ch) { break }
+                self.index += 1;
+                self.rest = rest;
+            }
+        }
+
+        match self.rest.slice_shift_char() {
+            Some((ch @ 'e', rest)) | Some((ch @ 'E', rest)) => {
+                self.index += 1;
+                self.rest = rest;
+                match self.rest.slice_shift_char() {
+                    Some(('+', rest)) | Some(('-', rest)) => {
+                        self.index += 1;
+                        self.rest = rest;
+                    },
+                    _ => {}
+                }
+                if let Some((ch, rest)) = self.rest.slice_shift_char() {
+                    if is_decimal_digit(ch) {
+                        while let Some((ch, rest)) = self.rest.slice_shift_char() {
+                            if !is_decimal_digit(ch) { break }
+                            self.index += 1;
+                            self.rest = rest;
+                        }
+                    } else { return Err(Error::UnexpectedToken); }
+                }
+            },
+            _ => {}
+        }
+
+        if let Some(ch) = self.rest.chars().next() {
+            if is_identifier_start(ch) { return Err(Error::UnexpectedToken) }
+        }
+
+        Ok(Token {
+            ty: NumericLiteral(try!(self.source[start..self.index].parse())),
+            line_number: self.line_number,
+            line_start: self.line_start,
+            start: start,
+            end: self.index,
+        })
+    }
+
     fn scan_string_literal(&mut self, quote: char) -> PRes<Token<'a>> {
         let mut s = String::new();
         let mut octal = false;
@@ -826,10 +996,10 @@ impl<'a> Ctx<'a> {
                 self.scan_string_literal(ch)
             },
             Some(('.', rest)) => match rest.slice_shift_char() {
-                Some((ch, _)) if is_decimal_digit(ch) => return Err(Error::UnexpectedToken),//self.scan_numeric_literal(),
+                Some((ch, _)) if is_decimal_digit(ch) => self.scan_numeric_literal('.', rest),
                 _ => self.scan_punctuator()
             },
-            Some((ch, _)) if is_decimal_digit(ch) => return Err(Error::UnexpectedToken),//self.scan_numeric_literal(),
+            Some((ch, rest)) if is_decimal_digit(ch) => self.scan_numeric_literal(ch, rest),
             // if extra.tokenize ...
             _ => self.scan_punctuator()
         }
