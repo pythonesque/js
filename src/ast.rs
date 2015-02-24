@@ -7,6 +7,8 @@ pub enum Tok<'a> {
     Keyword(&'a str),
     NullLiteral(&'a str),
     BooleanLiteral(&'a str),
+    OctalLiteral(&'a str),
+    StringLiteral(&'a str),
 
     Dot,
     Ellipsis,

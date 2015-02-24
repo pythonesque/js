@@ -81,6 +81,8 @@ pub enum Error {
     ExpectedHex,
     InvalidUnicode,
     ExpectedIdent,
+    UnterminatedStringLiteral,
+    UnexpectedEOF,
 }
 
 pub type PRes<T> = Result<T, Error>;
@@ -137,6 +139,20 @@ fn is_decimal_digit(ch: char) -> bool {
     match ch {
         '0'...'9' => true,
         _ => false
+    }
+}
+
+fn octal_digit(ch: char) -> Option<u32> {
+    match ch {
+        '0' => Some(0),
+        '1' => Some(1),
+        '2' => Some(2),
+        '3' => Some(3),
+        '4' => Some(4),
+        '5' => Some(5),
+        '6' => Some(6),
+        '7' => Some(7),
+        _ => None
     }
 }
 
@@ -199,10 +215,35 @@ impl<'a> Ctx<'a> {
             }
             i += 1;
         }
+        if self.rest.len() == 0 { return Err(Error::UnexpectedEOF) }
         match char::from_u32(code) {
             Some(ch) => Ok(ch),
             None => Err(Error::InvalidUnicode)
         }
+    }
+
+    fn scan_unicode_code_point_escape(&mut self) -> PRes<char> {
+        if let Some('}') = self.rest.chars().next() { return Err(Error::UnexpectedToken) }
+        let mut code = 0;
+
+        while let Some((ch, rest)) = self.rest.slice_shift_char() {
+            self.index += 1;
+            self.rest = rest;
+            match hex_digit(ch) {
+                Some(code_) => code = code * 16 + code_,
+                None if ch != '}' => return Err(Error::UnexpectedToken),
+                None => break
+            }
+            if code > 0x10FFFF { return Err(Error::UnexpectedToken) }
+        }
+        //if (code <= 0xFFFF) {
+            return match char::from_u32(code) {
+                Some(ch) => Ok(ch),
+                None => Err(Error::InvalidUnicode)
+            }
+        //}
+        //let cu1 = ((code - 0x10000) >> 10) + 0xD800;
+        //let cu2 = ((code - 0x10000) & 1023) + 0xDC00;
     }
 
     fn get_escaped_identifier(&mut self) -> PRes<&'a str> {
@@ -526,6 +567,114 @@ impl<'a> Ctx<'a> {
         })
     }
 
+    fn scan_string_literal(&mut self, quote: char) -> PRes<Token<'a>> {
+        let mut s = String::new();
+        let mut octal = false;
+        let start = self.index - 1;
+
+        while let Some((ch, rest)) = self.rest.slice_shift_char() {
+            self.index += 1;
+            self.rest = rest;
+
+            if ch == quote { break }
+            else if ch == '\\' {
+                match self.rest.slice_shift_char() {
+                    Some((ch, rest)) => {
+                        self.index += 1;
+                        self.rest = rest;
+                        if !is_line_terminator(ch) {
+                            match ch {
+                                'u' | 'x' => {
+                                    match self.rest.slice_shift_char() {
+                                        Some(('{', rest)) => {
+                                            self.index += 1;
+                                            self.rest = rest;
+                                            s.push(try!(self.scan_unicode_code_point_escape()));
+                                        },
+                                        _ => {
+                                            let restore = self.index;
+                                            let prefix = if ch == 'u' { ScanHex::U } else { ScanHex::X };
+                                            match self.scan_hex_escape(prefix) {
+                                                Ok(c) => s.push(c),
+                                                //Err(Error::InvalidUnicode) => return Err(Error::InvalidUnicode),
+                                                _ => {
+                                                    self.index = restore;
+                                                    self.rest = rest;
+                                                    s.push(ch);
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                'n' => s.push('\n'),
+                                'r' => s.push('\r'),
+                                't' => s.push('\t'),
+                                'b' => s.push('\x08'),
+                                'f' => s.push('\x0C'),
+                                'v' => s.push('\x0B'),
+                                _ => match octal_digit(ch) {
+                                    Some(mut code) => {
+                                        // \0 is not octal escape sequence
+                                        if code != 0 { octal = true; }
+
+                                        if let Some((ch_, rest)) = self.rest.slice_shift_char() {
+                                            if let Some(code_) = octal_digit(ch_) {
+                                                octal = true;
+                                                code = code * 8 + code_;
+                                                self.index += 1;
+                                                self.rest = rest;
+
+                                                // 3 digits are only allowed when string starts
+                                                // with 0, 1, 2, 3
+                                                if let '0'...'3' = ch {
+                                                    if let Some((ch_, rest)) = self.rest.slice_shift_char() {
+                                                        if let Some(code_) = octal_digit(ch_) {
+                                                            self.index += 1;
+                                                            self.rest = rest;
+                                                            code = code * 8 + code_;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        match char::from_u32(code as u32) {
+                                            Some(ch) => s.push(ch),
+                                            None => return Err(Error::InvalidUnicode)
+                                        }
+                                    },
+                                    None => s.push(ch)
+                                }
+                            }
+                        } else {
+                            self.line_number += 1;
+                            if ch == '\r' {
+                                if let Some(('\n', rest)) = self.rest.slice_shift_char() {
+                                    self.index += 1;
+                                    self.rest = rest;
+                                }
+                            }
+                            self.line_start = self.index;
+                        }
+                    },
+                    None => return Err(Error::UnterminatedStringLiteral)
+                }
+            } else if is_line_terminator(ch) {
+                return Err(Error::UnexpectedToken);
+            } else {
+                s.push(ch);
+            }
+        }
+        if self.rest.len() == 0 { return Err(Error::UnexpectedToken) }
+        let s = &**self.root.arena.alloc(s);
+        Ok(Token {
+            ty: if octal { OctalLiteral(s) } else { StringLiteral(s) },
+            line_number: self.start_line_number,
+            line_start: self.start_line_start,
+            start: start,
+            end: self.index
+        })
+    }
+
     fn skip_single_line_comment(&mut self, offset: usize) {
         //let start = self.index - offset;
         //let loc =
@@ -671,7 +820,11 @@ impl<'a> Ctx<'a> {
             }),
             Some((ch, _)) if is_identifier_start(ch) => self.scan_identifier(),
             Some(('(', _)) | Some((')', _)) | Some((';', _)) => self.scan_punctuator(),
-            Some(('\'', _)) | Some(('"', _)) => return Err(Error::UnexpectedToken),//self.scan_string_literal(),
+            Some((ch @ '\'', rest)) | Some((ch @ '"', rest)) => {
+                self.index += 1;
+                self.rest = rest;
+                self.scan_string_literal(ch)
+            },
             Some(('.', rest)) => match rest.slice_shift_char() {
                 Some((ch, _)) if is_decimal_digit(ch) => return Err(Error::UnexpectedToken),//self.scan_numeric_literal(),
                 _ => self.scan_punctuator()
