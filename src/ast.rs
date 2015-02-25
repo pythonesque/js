@@ -71,7 +71,7 @@ pub type StatementListItemNode<'a, Annotation> = Annotated<Annotation, Statement
 #[derive(Debug)]
 pub enum StatementListItem<'a, Annotation> {
     Statement(StatementNode<'a, Annotation>),
-    FunctionDeclaration(IdentifierNode<'a, Annotation>, FunctionNode<'a, Annotation>),
+    //FunctionDeclaration(IdentifierNode<'a, Annotation>, FunctionNode<'a, Annotation>),
 }
 
 pub type ScriptNode<'a, Annotation> = Annotated<Annotation, Script<'a, Annotation>>;

@@ -4,9 +4,8 @@ extern crate arena;
 
 use arena::TypedArena;
 
-use ast::{Annotation, finish, Identifier, Script, Statement};
+use ast::{Annotation, finish, Statement};
 use ast::Annotated as A;
-use ast::Block as B;
 use ast::BlockNode as BN;
 use ast::Expression as E;
 use ast::ExpressionNode as EN;
@@ -28,7 +27,7 @@ use std::num::{self, ParseFloatError};
 
 mod ast;
 
-type Pos = usize;
+pub type Pos = usize;
 
 macro_rules! expect {
     ($e:expr, $pat:pat) => {
@@ -71,7 +70,7 @@ pub struct Ctx<'a> {
     start_index: Pos,
     start_line_number: Pos,
     start_line_start: Pos,
-    length: usize,
+    //length: usize,
     lookahead: Option<Token<'a>>,
     state: State<'a>,
 
@@ -87,11 +86,11 @@ pub struct Ctx<'a> {
 
 #[derive(Copy)]
 pub struct Token<'a> {
-    ty: T<'a>,
-    line_number: Pos,
-    line_start: Pos,
-    start: Pos,
-    end: Pos
+    pub ty: T<'a>,
+    pub line_number: Pos,
+    pub line_start: Pos,
+    pub start: Pos,
+    pub end: Pos
 }
 
 impl<'a> fmt::Debug for Token<'a> {
@@ -246,11 +245,11 @@ impl<'a> Annotation for () {
     type Ctx = Ctx<'a>;
     type Start = ();
 
-    fn start(ctx: &Ctx) -> () {
+    fn start(_: &Ctx) -> () {
         ()
     }
 
-    fn finish(start: (), ctx: &Ctx) -> () {
+    fn finish(_: (), _: &Ctx) -> () {
         ()
     }
 }
@@ -706,7 +705,6 @@ impl<'a> Ctx<'a> {
 
     fn scan_numeric_literal(&mut self, ch: char, rest: &'a str) -> PRes<Token<'a>> {
         let start = self.index;
-        let number = self.rest;
 
         if ch != '.' {
             self.index += 1;
@@ -755,7 +753,7 @@ impl<'a> Ctx<'a> {
         }
 
         match self.rest.slice_shift_char() {
-            Some((ch @ 'e', rest)) | Some((ch @ 'E', rest)) => {
+            Some(('e', rest)) | Some(('E', rest)) => {
                 self.index += 1;
                 self.rest = rest;
                 match self.rest.slice_shift_char() {
@@ -767,6 +765,8 @@ impl<'a> Ctx<'a> {
                 }
                 if let Some((ch, rest)) = self.rest.slice_shift_char() {
                     if is_decimal_digit(ch) {
+                        self.index += 1;
+                        self.rest = rest;
                         while let Some((ch, rest)) = self.rest.slice_shift_char() {
                             if !is_decimal_digit(ch) { break }
                             self.index += 1;
@@ -899,7 +899,7 @@ impl<'a> Ctx<'a> {
         })
     }
 
-    fn skip_single_line_comment(&mut self, offset: usize) {
+    fn skip_single_line_comment(&mut self, /*offset*/_: usize) {
         //let start = self.index - offset;
         //let loc =
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
@@ -1139,23 +1139,24 @@ impl<'a> Ctx<'a> {
     {
         let node = self.start::<Ann>();
         if let Some(Token { ty, .. }) = self.lookahead {
-            Ok(match ty {
-                T::Identifier(v) => { try!(self.lex()); finish(node, self, E::Identifier(v)) },
-                T::StringLiteral(s) => { try!(self.lex()); finish(node, self, E::String(s)) },
-                T::NumericLiteral(n) => { try!(self.lex()); finish(node, self, E::Number(n)) },
+            let exp = match ty {
+                T::Identifier(v) => { try!(self.lex()); E::Identifier(v) },
+                T::StringLiteral(s) => { try!(self.lex()); E::String(s) },
+                T::NumericLiteral(n) => { try!(self.lex()); E::Number(n) },
                 T::OctalLiteral(o) => {
                     //if self.strict { tolerate_unexpected_token(lookahead, StrictOctal); }
                     try!(self.lex());
-                    finish(node, self, E::String(o))
+                    E::String(o)
                 },
                 T::Function => {
                     let (name, function) = try!(self.parse_function_expression());
-                    finish(node, self, E::Function(name, function))
+                    E::Function(name, function)
                 },
                 _ => {
                     return Err(Error::UnexpectedToken)
                 }
-            })
+            };
+            Ok(finish(node, self, exp))
         } else {
             return Err(Error::UnexpectedEOF)
         }
@@ -1254,7 +1255,7 @@ impl<'a> Ctx<'a> {
 
         let expr = try!(self.parse_expression());
 
-        self.consume_semicolon();
+        try!(self.consume_semicolon());
 
         Ok(finish(node, self, Statement::Expression(expr)))
     }
@@ -1267,9 +1268,9 @@ impl<'a> Ctx<'a> {
 
         expect!(self, T::LBrack);
 
-        while let Some(Token { ty: T::StringLiteral(s), .. }) = self.lookahead {
+        while let Some(Token { ty: T::StringLiteral(_), .. }) = self.lookahead {
              let statement = try!(self.parse_statement_list_item());
-             let mut first_restricted = false;
+             let first_restricted = false;
              if let A(_, SLI::Statement(A(_, Statement::Expression(A(_,E::String(directive)))))) = statement {
                 match directive {
                     "use strict" => {
@@ -1294,7 +1295,7 @@ impl<'a> Ctx<'a> {
         let allow_in = self.state.allow_in;
         let last_comment_start = self.state.last_comment_start;
 
-        let mut old_state = mem::replace(&mut self.state, State {
+        let old_state = mem::replace(&mut self.state, State {
             allow_in: allow_in,
             label_set: HashSet::new(),
             parenthesis_count: 0,
@@ -1322,7 +1323,7 @@ impl<'a> Ctx<'a> {
         return Ok(finish(node, self, body));
     }
 
-    fn parse_params<Ann>(&mut self, firstRestricted: Option<&'a str>) -> PRes<(Vec<IN<'a, Ann>>, /*defaults, */ Option<IN<'a, Ann>>)>
+    fn parse_params<Ann>(&mut self, /*first_restricted*/_: Option<&'a str>) -> PRes<(Vec<IN<'a, Ann>>, /*defaults, */ Option<IN<'a, Ann>>)>
         where Ann: Annotation<Ctx=Self>
     {
         let params = Vec::new();
@@ -1340,12 +1341,12 @@ impl<'a> Ctx<'a> {
         where Ann: Annotation<Ctx=Self>
     {
         let mut id = None;
-        let mut first_restricted = None;
+        let first_restricted = None;
         let node = self.start::<Ann>();
 
         expect!(self, T::Function);
         if !tmatch!(self.lookahead, T::LParen) {
-            let token = self.lookahead;
+            //let token = self.lookahead;
             id = Some(try!(self.parse_variable_identifier()));
             // if strict ...
                 // if is_restricted_word { firstrestricted = token }
@@ -1376,7 +1377,7 @@ impl<'a> Ctx<'a> {
         let mut body = Vec::new();
         let first_restricted = false;
 
-        while let Some(Token { ty: T::StringLiteral(s), .. }) = self.lookahead {
+        while let Some(Token { ty: T::StringLiteral(_), .. }) = self.lookahead {
              let statement = try!(self.parse_statement_list_item());
              if let A(_, SLI::Statement(A(_, Statement::Expression(A(_,E::String(directive)))))) = statement {
                 match directive {
@@ -1421,7 +1422,7 @@ impl<'a> Ctx<'a> {
 }
 
 
-pub fn parse<'a, Ann>(root: &'a RootCtx, code: &'a str, options: Options) -> PRes<ScriptN<'a, Ann>>
+pub fn parse<'a, Ann>(root: &'a RootCtx, code: &'a str, /*options*/_: Options) -> PRes<ScriptN<'a, Ann>>
         where Ann: Annotation<Ctx=Ctx<'a>>
     {
     let source = code;
@@ -1432,7 +1433,7 @@ pub fn parse<'a, Ann>(root: &'a RootCtx, code: &'a str, options: Options) -> PRe
     let start_index = index;
     let start_line_number = line_number;
     let start_line_start = line_start;
-    let length = source.len();
+    //let length = source.len();
     let lookahead = None;
 
     let state = State {
@@ -1454,7 +1455,7 @@ pub fn parse<'a, Ann>(root: &'a RootCtx, code: &'a str, options: Options) -> PRe
         start_index: start_index,
         start_line_number: start_line_number,
         start_line_start: start_line_start,
-        length: length,
+        //length: length,
         lookahead: lookahead,
         state: state,
 
