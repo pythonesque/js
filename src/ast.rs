@@ -87,6 +87,7 @@ pub enum Tok<'a> {
     StringLiteral(&'a str),
     NumericLiteral(f64),
 
+    // Keywords
     If, In, Do,
     Var, For, New, Try, Let,
     This, Else, Case, Void, With, Enum,
@@ -94,6 +95,9 @@ pub enum Tok<'a> {
     Return, TypeOf, Delete, Switch, Export, Import,
     Default, Finally, Extends, Function, Continue, Debugger,
     InstanceOf,
+
+    // Strict mode reserved words
+    Implements, Interface, Package, Private, Protected, Public, Static,
 
     Dot,
     Ellipsis,
