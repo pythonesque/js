@@ -1,23 +1,52 @@
-#![feature(collections)]
-#![feature(rustc_private)]
+#![feature(box_syntax,core,collections,rustc_private)]
 
 extern crate arena;
 
 use arena::TypedArena;
 
-use ast::{Program, Tok};
-use ast::Tok::*;
+use ast::{Annotation, finish, Identifier, Script, Statement};
+use ast::Annotated as A;
+use ast::Block as B;
+use ast::BlockNode as BN;
+use ast::Expression as E;
+use ast::ExpressionNode as EN;
+use ast::IdentifierNode as IN;
+use ast::Function as F;
+use ast::FunctionNode as FN;
+use ast::ScriptNode as ScriptN;
+use ast::StatementListItem as SLI;
+use ast::StatementListItemNode as SLIN;
+use ast::StatementNode as SN;
+use ast::Tok as T;
 
 use std::char;
 use std::collections::HashSet;
 use std::error::FromError;
-use std::num::{self, FromStrRadix, ParseFloatError};
+use std::fmt;
+use std::mem;
+use std::num::{self, ParseFloatError};
 
 mod ast;
 
 type Pos = usize;
 
-#[derive(Default)]
+macro_rules! expect {
+    ($e:expr, $pat:pat) => {
+        if let Some(Token { ty: $pat , .. }) = $e.lookahead {
+            try!($e.lex());
+        } else {
+            return Err(Error::UnexpectedToken)
+        }
+    }
+}
+
+macro_rules! tmatch {
+    ($e:expr, $pat:pat) => {
+        if let Some(Token { ty: $pat, .. }) = $e { true } else { false }
+    }
+}
+
+#[derive(Clone, Default)]
 pub struct State<'a> {
     allow_in: bool,
     label_set: HashSet<&'a str>,
@@ -51,17 +80,24 @@ pub struct Ctx<'a> {
     last_index: Option<Pos>,
     last_line_number: Option<Pos>,
     last_line_start: Option<Pos>,
+    strict: bool,
 
     root: &'a RootCtx,
 }
 
-#[derive(Debug)]
+#[derive(Copy)]
 pub struct Token<'a> {
-    ty: Tok<'a>,
+    ty: T<'a>,
     line_number: Pos,
     line_start: Pos,
     start: Pos,
     end: Pos
+}
+
+impl<'a> fmt::Debug for Token<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.ty.fmt(f)
+    }
 }
 
 /*pub enum Loc {
@@ -187,22 +223,37 @@ fn hex_digit(ch: char) -> Option<u32> {
     }
 }
 
-fn is_keyword(id: &str) -> bool{
+fn keyword<'a>(id: &str) -> Option<T<'a>> {
+    use ast::Tok::*;
+
     // if strict ...
-    match id {
-        "if" | "in" | "do" |
-        "var" | "for" | "new" | "try" | "let" |
-        "this" | "else" | "case" | "void" | "with" | "enum" |
-        "while" | "break" | "catch" | "throw" | "const" | "yield" | "class" | "super" |
-        "return" | "typeof" | "delete" | "switch" | "export" | "import" |
-        "default" | "finally" | "extends" |
-        "function" | "continue" | "debugger" |
-        "instanceof" => true,
-        _ => false
-    }
+    Some(match id {
+        "if" => If, "in" => In, "do" => Do,
+        "var" => Var, "for" => For, "new" => New, "try" => Try, "let" => Let,
+        "this" => This, "else" => Else, "case" => Case, "void" => Void, "with" => With, "enum" => Enum,
+        "while" => While, "break" => Break, "catch" => Catch, "throw" => Throw, "const" => Const, "yield" => Yield, "class" => Class, "super" => Super,
+        "return" => Return, "typeof" => TypeOf, "delete" => Delete, "switch" => Switch, "export" => Export, "import" => Import,
+        "default" => Default, "finally" => Finally, "extends" => Extends,
+        "function" => Function, "continue" => Continue, "debugger" => Debugger,
+        "instanceof" => InstanceOf,
+        _ => return None
+    })
 }
 
 enum ScanHex { U, X }
+
+impl<'a> Annotation for () {
+    type Ctx = Ctx<'a>;
+    type Start = ();
+
+    fn start(ctx: &Ctx) -> () {
+        ()
+    }
+
+    fn finish(start: (), ctx: &Ctx) -> () {
+        ()
+    }
+}
 
 impl<'a> Ctx<'a> {
     fn scan_hex_escape(&mut self, prefix: ScanHex) -> PRes<char> {
@@ -331,15 +382,17 @@ impl<'a> Ctx<'a> {
         });
 
         let ty = if id.len() == 1 {
-            Identifier(id)
-        } else if is_keyword(id) {
-            Keyword(id)
+            T::Identifier(id)
+        } else if let Some(k) = keyword(id) {
+            k
         } else if id == "null" {
-            NullLiteral(id)
-        } else if id == "true" || id == "false" {
-            BooleanLiteral(id)
+            T::NullLiteral
+        } else if id == "true" {
+            T::BooleanLiteral(true)
+        } else if id == "false" {
+            T::BooleanLiteral(false)
         } else {
-            Identifier(id)
+            T::Identifier(id)
         };
 
         Ok(Token {
@@ -352,6 +405,8 @@ impl<'a> Ctx<'a> {
     }
 
     fn scan_punctuator(&mut self) -> PRes<Token<'a>> {
+        use ast::Tok::*;
+
         let line_number = self.line_number;
         let line_start = self.line_start;
         let start = self.index;
@@ -399,7 +454,6 @@ impl<'a> Ctx<'a> {
                                     self.index += 2;
                                     rest = rest_;
                                     GtGtGt
-
                                 }
                             },
                             Some(('=', rest_)) => {
@@ -588,7 +642,7 @@ impl<'a> Ctx<'a> {
             if is_identifier_start(ch) { return Err(Error::UnexpectedToken) }
         }
         Ok(Token {
-            ty: NumericLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 16))),
+            ty: T::NumericLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 16))),
             line_number: self.line_number,
             line_start: self.line_start,
             start: start,
@@ -608,7 +662,7 @@ impl<'a> Ctx<'a> {
             if is_identifier_start(ch) || is_decimal_digit(ch) { return Err(Error::UnexpectedToken) }
         }
         Ok(Token {
-            ty: NumericLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 2))),
+            ty: T::NumericLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 2))),
             line_number: self.line_number,
             line_start: self.line_start,
             start: start,
@@ -634,7 +688,7 @@ impl<'a> Ctx<'a> {
             if is_identifier_start(ch) || is_decimal_digit(ch) { return Err(Error::UnexpectedToken) }
         }
         Ok(Token {
-            ty: NumericLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 8))),
+            ty: T::NumericLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 8))),
             line_number: self.line_number,
             line_start: self.line_start,
             start: start,
@@ -729,7 +783,7 @@ impl<'a> Ctx<'a> {
         }
 
         Ok(Token {
-            ty: NumericLiteral(try!(self.source[start..self.index].parse())),
+            ty: T::NumericLiteral(try!(self.source[start..self.index].parse())),
             line_number: self.line_number,
             line_start: self.line_start,
             start: start,
@@ -837,7 +891,7 @@ impl<'a> Ctx<'a> {
         if self.rest.len() == 0 { return Err(Error::UnexpectedToken) }
         let s = &**self.root.arena.alloc(s);
         Ok(Token {
-            ty: if octal { OctalLiteral(s) } else { StringLiteral(s) },
+            ty: if octal { T::OctalLiteral(s) } else { T::StringLiteral(s) },
             line_number: self.start_line_number,
             line_start: self.start_line_start,
             start: start,
@@ -982,7 +1036,7 @@ impl<'a> Ctx<'a> {
     fn advance(&mut self) -> PRes<Token<'a>> {
         match self.rest.slice_shift_char() {
             None => Ok(Token {
-                ty: EOF,
+                ty: T::EOF,
                 line_number: self.line_number,
                 line_start: self.line_start,
                 start: self.index,
@@ -1005,6 +1059,33 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    fn lex(&mut self) -> PRes</*Token<'a>*/()> {
+        self.scanning = true;
+
+        self.last_index = Some(self.index);
+        self.last_line_number = Some(self.line_number);
+        self.last_line_start = Some(self.line_start);
+
+        try!(self.skip_comment());
+
+        // let token = self.lookahead;
+
+        self.start_index = self.index;
+        self.start_line_number = self.line_number;
+        self.start_line_start = self.line_start;
+
+        self.lookahead = match try!(self.advance()) {
+            Token { ty: T::EOF, .. } => None,
+            tok => Some(/* extra.tokens*/tok)
+        };
+        println!("{:?}", self.lookahead);
+
+        self.scanning = false;
+
+        // token
+        Ok(())
+    }
+
     fn peek(&mut self) -> PRes<()> {
         self.scanning = true;
 
@@ -1018,7 +1099,10 @@ impl<'a> Ctx<'a> {
         self.start_line_number = self.line_number;
         self.start_line_start = self.line_start;
 
-        self.lookahead = Some(/* extra.tokens */ try!(self.advance()));
+        self.lookahead = match try!(self.advance()) {
+            Token { ty: T::EOF, .. } => None,
+            tok => Some(/* extra.tokens */tok)
+        };
         println!("{:?}", self.lookahead);
 
         self.scanning = false;
@@ -1026,14 +1110,320 @@ impl<'a> Ctx<'a> {
         Ok(())
     }
 
-    fn parse_program(&mut self) -> PRes<Program> {
+    fn consume_semicolon(&mut self) -> PRes<()> {
+        if Some(';') == self.rest.chars().next() { try!(self.lex()); return Ok(()) }
+        if let Some(Token { ty: T::Semi, .. } ) = self.lookahead { try!(self.lex()); return Ok(()) }
+
+        if self.has_line_terminator { return Ok(()) }
+
+        self.last_index = Some(self.start_index);
+        self.last_line_number = Some(self.start_line_number);
+        self.last_line_start = Some(self.start_line_start);
+
+        match self.lookahead {
+            Some(Token { ty: T::RBrack, .. }) | None => Ok(()),
+            _ => Err(Error::UnexpectedToken)
+        }
+    }
+}
+
+impl<'a> Ctx<'a> {
+    fn start<Ann>(&self) -> <Ann as Annotation>::Start
+        where Ann: Annotation<Ctx=Self>
+    {
+        <Ann as Annotation>::start(self)
+    }
+
+    fn parse_primary_expression<Ann>(&mut self) -> PRes<EN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let node = self.start::<Ann>();
+        if let Some(Token { ty, .. }) = self.lookahead {
+            Ok(match ty {
+                T::Identifier(v) => { try!(self.lex()); finish(node, self, E::Identifier(v)) },
+                T::StringLiteral(s) => { try!(self.lex()); finish(node, self, E::String(s)) },
+                T::NumericLiteral(n) => { try!(self.lex()); finish(node, self, E::Number(n)) },
+                T::OctalLiteral(o) => {
+                    //if self.strict { tolerate_unexpected_token(lookahead, StrictOctal); }
+                    try!(self.lex());
+                    finish(node, self, E::String(o))
+                },
+                T::Function => {
+                    let (name, function) = try!(self.parse_function_expression());
+                    finish(node, self, E::Function(name, function))
+                },
+                _ => {
+                    return Err(Error::UnexpectedToken)
+                }
+            })
+        } else {
+            return Err(Error::UnexpectedEOF)
+        }
+    }
+
+    fn parse_left_hand_side_expression_allow_call<Ann>(&mut self) -> PRes<EN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let expr = self.parse_primary_expression();
+
+        expr
+    }
+
+    fn parse_postfix_expression<Ann>(&mut self) -> PRes<EN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let expr = self.parse_left_hand_side_expression_allow_call();
+
+        expr
+    }
+
+    fn parse_unary_expression<Ann>(&mut self) -> PRes<EN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let expr = self.parse_postfix_expression();
+
+        expr
+    }
+
+    fn parse_binary_expression<Ann>(&mut self) -> PRes<EN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let left = self.parse_unary_expression();
+
+        left
+    }
+
+    fn parse_conditional_expression<Ann>(&mut self) -> PRes<EN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let expr = self.parse_binary_expression();
+
+        expr
+    }
+
+    fn parse_assignment_expression<Ann>(&mut self) -> PRes<EN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let expr = self.parse_conditional_expression();
+
+        expr
+    }
+
+    fn parse_expression<Ann>(&mut self) -> PRes<EN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let expr = self.parse_assignment_expression();
+
+        expr
+    }
+
+    fn parse_variable_identifier<Ann>(&mut self) -> PRes<IN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let node = self.start::<Ann>();
+        let token = self.lookahead;
+        try!(self.lex());
+        match token {
+            Some(Token { ty: T::Identifier(i), .. }) => Ok(finish(node, self, i)),
+            _ => {
+                // if self.strict && tmatch!(token, ) ...
+                Err(Error::UnexpectedToken)
+            }
+        }
+    }
+
+    fn parse_empty_statement<Ann>(&mut self, node: <Ann as Annotation>::Start) -> PRes<SN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        expect!(self, T::Semi);
+        Ok(finish(node, self, Statement::Empty))
+    }
+
+    fn parse_statement<Ann>(&mut self) -> PRes<SN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let node = self.start::<Ann>();
+        match self.lookahead {
+            Some(Token { ty, .. }) => match ty {
+                //T::LBrack => return parse_block(),
+                T::Semi => return self.parse_empty_statement(node),
+                _ => {}
+            },
+            None => return Err(Error::UnexpectedToken),
+        }
+
+        let expr = try!(self.parse_expression());
+
+        self.consume_semicolon();
+
+        Ok(finish(node, self, Statement::Expression(expr)))
+    }
+
+    fn parse_function_source_elements<Ann>(&mut self) -> PRes<BN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let mut body = Vec::new();
+        let node = self.start::<Ann>();
+
+        expect!(self, T::LBrack);
+
+        while let Some(Token { ty: T::StringLiteral(s), .. }) = self.lookahead {
+             let statement = try!(self.parse_statement_list_item());
+             let mut first_restricted = false;
+             if let A(_, SLI::Statement(A(_, Statement::Expression(A(_,E::String(directive)))))) = statement {
+                match directive {
+                    "use strict" => {
+                        self.strict = true;
+                        if first_restricted
+                            { /*tolerate_unexpected_token(first_restricted, StrictOctalLiteral)*/ }
+                    },
+                    _ => {
+                        /*if !first_restricted {
+                            if let OctalLiteral(_) = token {
+                                first_restricted = token;
+                            }
+                        }*/
+                    }
+                }
+            } else {
+                body.push(statement);
+                break
+            }
+        }
+
+        let allow_in = self.state.allow_in;
+        let last_comment_start = self.state.last_comment_start;
+
+        let mut old_state = mem::replace(&mut self.state, State {
+            allow_in: allow_in,
+            label_set: HashSet::new(),
+            parenthesis_count: 0,
+            in_function_body: true,
+            in_iteration: false,
+            in_switch: false,
+            last_comment_start: last_comment_start,
+        });
+
+        while let Some(token) = self.lookahead {
+            if let Token { ty: T::RBrack, .. } = token { break }
+            let statement = try!(self.parse_statement_list_item());
+            body.push(statement);
+        }
+
+        expect!(self, T::RBrack);
+
+         self.state = State {
+            allow_in: self.state.allow_in,
+            last_comment_start: self.state.last_comment_start,
+
+            .. old_state
+        };
+
+        return Ok(finish(node, self, body));
+    }
+
+    fn parse_params<Ann>(&mut self, firstRestricted: Option<&'a str>) -> PRes<(Vec<IN<'a, Ann>>, /*defaults, */ Option<IN<'a, Ann>>)>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let params = Vec::new();
+        expect!(self, T::LParen);
+
+        if !tmatch!(self.lookahead, T::RParen) {
+            expect!(self, T::Comma);
+        }
+
+        expect!(self, T::RParen);
+        Ok((params, None))
+    }
+
+    fn parse_function_expression<Ann>(&mut self) -> PRes<(Option<IN<'a, Ann>>, FN<'a, Ann>)>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let mut id = None;
+        let mut first_restricted = None;
+        let node = self.start::<Ann>();
+
+        expect!(self, T::Function);
+        if !tmatch!(self.lookahead, T::LParen) {
+            let token = self.lookahead;
+            id = Some(try!(self.parse_variable_identifier()));
+            // if strict ...
+                // if is_restricted_word { firstrestricted = token }
+                // else if strictmode....
+        }
+
+        let (params, rest) = try!(self.parse_params(first_restricted));
+
+        let body = try!(self.parse_function_source_elements());
+
+        Ok((id, finish(node, self, F {
+            params: params,
+            rest: rest,
+            body: body,
+        })))
+    }
+
+    fn parse_statement_list_item<Ann>(&mut self) -> PRes<SLIN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let node = self.start::<Ann>();
+        self.parse_statement().map( |stmt| finish(node, self, SLI::Statement(stmt)) )
+    }
+
+    fn parse_script_body<Ann>(&mut self) -> PRes<Vec<SLIN<'a, Ann>>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let mut body = Vec::new();
+        let first_restricted = false;
+
+        while let Some(Token { ty: T::StringLiteral(s), .. }) = self.lookahead {
+             let statement = try!(self.parse_statement_list_item());
+             if let A(_, SLI::Statement(A(_, Statement::Expression(A(_,E::String(directive)))))) = statement {
+                match directive {
+                    "use strict" => {
+                        self.strict = true;
+                        if first_restricted
+                            { /*tolerate_unexpected_token(first_restricted, StrictOctalLiteral)*/ }
+                    },
+                    _ => {
+                        /*if !first_restricted {
+                            if let OctalLiteral(_) = token {
+                                first_restricted = token;
+                            }
+                        }*/
+                    }
+                }
+            } else {
+                body.push(statement);
+                break
+            }
+            body.push(statement);
+        }
+
+        while let Some(_) = self.lookahead {
+            let statement = try!(self.parse_statement_list_item());
+            body.push(statement);
+        }
+
+        Ok(body)
+    }
+
+    fn parse_program<Ann>(&mut self) -> PRes<ScriptN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
         try!(self.peek());
-        Ok(Program)
+        let node = self.start::<Ann>();
+        self.strict = false;
+
+        let body = try!(self.parse_script_body());
+        Ok(finish(node, self, body))
     }
 }
 
 
-pub fn parse<'a>(root: &'a RootCtx, code: &'a str, options: Options) -> PRes<Program> {
+pub fn parse<'a, Ann>(root: &'a RootCtx, code: &'a str, options: Options) -> PRes<ScriptN<'a, Ann>>
+        where Ann: Annotation<Ctx=Ctx<'a>>
+    {
     let source = code;
     let index = 0;
     let line_number = if code.len() > 0 { 1 } else { 0 };
@@ -1073,6 +1463,7 @@ pub fn parse<'a>(root: &'a RootCtx, code: &'a str, options: Options) -> PRes<Pro
         last_index: None,
         last_line_number: None,
         last_line_start: None,
+        strict: false,
 
         rest: source,
 
@@ -1085,5 +1476,5 @@ pub fn parse<'a>(root: &'a RootCtx, code: &'a str, options: Options) -> PRes<Pro
 #[test]
 fn it_works() {
     let root = RootCtx::new();
-    parse(&root, include_str!("../tests/test.js"), Options).unwrap();
+    println!("{:?}", parse::<()>(&root, include_str!("../tests/test.js"), Options).unwrap());
 }
