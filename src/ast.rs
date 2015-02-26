@@ -39,10 +39,17 @@ impl<Annotation, T> DerefMut for Annotated<Annotation, T> {
 pub type IdentifierNode<'a, Annotation> = Annotated<Annotation, Identifier<'a>>;
 pub type Identifier<'a> = &'a str;
 
+pub type BindingElementNode<'a, Annotation> = Annotated<Annotation, BindingElement<'a, Annotation>>;
+#[derive(Debug)]
+pub enum BindingElement<'a, Annotation> {
+    SingleName(IdentifierNode<'a, Annotation>, ExpressionNode<'a, Annotation>),
+    Uninitialized(IdentifierNode<'a, Annotation>),
+}
+
 #[derive(Debug)]
 pub struct Function<'a, Annotation> {
     pub params: Vec<IdentifierNode<'a, Annotation>>,
-    pub defaults: Vec<ExpressionNode<'a, Annotation>>,
+    pub defaults: Vec<BindingElementNode<'a, Annotation>>,
     pub rest: Option<IdentifierNode<'a, Annotation>>,
     pub body: BlockNode<'a, Annotation>,
 }

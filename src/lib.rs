@@ -5,9 +5,10 @@ extern crate unicode;
 
 use arena::TypedArena;
 
-use ast::{Annotation, finish, Identifier, Statement};
+use ast::{Annotation, BindingElement, finish, Identifier, Statement};
 use ast::Annotated as A;
 use ast::BlockNode as BN;
+use ast::BindingElementNode as BEN;
 use ast::Expression as E;
 use ast::ExpressionNode as EN;
 use ast::IdentifierNode as IN;
@@ -1225,7 +1226,7 @@ impl<'a> Ctx<'a> {
 
 struct Params<'a, Ann> {
     params: Vec<IN<'a, Ann>>,
-    pub defaults: Vec<EN<'a, Ann>>,
+    pub defaults: Vec<BEN<'a, Ann>>,
     rest: Option<IN<'a, Ann>>,
     stricted: Option<Error<'a>>,
     first_restricted: Option<Error<'a>>,
@@ -1487,6 +1488,7 @@ impl<'a> Ctx<'a> {
             None => return Err(Error::UnexpectedEOF),
         };
 
+        let node = self.start::<Ann>();
         let param = try!(self.parse_variable_identifier());
         self.validate_param(params, token, &param);
 
@@ -1495,19 +1497,20 @@ impl<'a> Ctx<'a> {
 
             try!(self.lex());
             let def = try!(self.parse_assignment_expression());
-            params.defaults.push(def);
-        }
-
-        Ok(if rest {
+            params.defaults.push(finish(node, self, BindingElement::SingleName(param, def)));
+        } else if rest {
             if !tmatch!(self.lookahead, T::RParen) {
                 return Err(Error::ParameterAfterRestParameter);
             }
             params.rest = Some(param);
-            false
-        } else {
+            return Ok(false)
+        } else if params.defaults.is_empty() {
             params.params.push(param);
-            !tmatch!(self.lookahead, T::RParen)
-        })
+        } else {
+            // Uninitialized default
+            params.defaults.push(finish(node, self, BindingElement::Uninitialized(param)));
+        }
+        Ok(!tmatch!(self.lookahead, T::RParen))
     }
 
     fn parse_params<Ann>(&mut self, first_restricted: Option<Error<'a>>) -> PRes<'a, Params<'a, Ann>>
@@ -1695,7 +1698,7 @@ impl<'a> Ctx<'a> {
 }
 
 
-pub fn parse<'a, Ann>(root: &'a RootCtx, code: &'a str, /*options*/_: Options) -> PRes<'a, ScriptN<'a, Ann>>
+pub fn parse<'a, Ann>(root: &'a RootCtx, code: &'a str, /*options*/_: &Options) -> PRes<'a, ScriptN<'a, Ann>>
         where Ann: Annotation<Ctx=Ctx<'a>>
     {
     let source = code;
@@ -1750,5 +1753,5 @@ pub fn parse<'a, Ann>(root: &'a RootCtx, code: &'a str, /*options*/_: Options) -
 #[test]
 fn it_works() {
     let root = RootCtx::new();
-    println!("{:?}", parse::<()>(&root, include_str!("../tests/test.js"), Options).unwrap());
+    println!("{:?}", parse::<()>(&root, include_str!("../tests/test.js"), &Options).unwrap());
 }
