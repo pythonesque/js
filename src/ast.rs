@@ -43,7 +43,7 @@ pub type FunctionNode<'a, Annotation> = Annotated<Annotation, Function<'a, Annot
 #[derive(Debug)]
 pub struct Function<'a, Annotation> {
     pub params: Vec<IdentifierNode<'a, Annotation>>,
-    //pub defaults: Vec<(&'a str, ExpressionNode<'a>)>,
+    pub defaults: Vec<ExpressionNode<'a, Annotation>>,
     pub rest: Option<IdentifierNode<'a, Annotation>>,
     pub body: BlockNode<'a, Annotation>,
 }

@@ -5,7 +5,7 @@ extern crate unicode;
 
 use arena::TypedArena;
 
-use ast::{Annotation, finish, Statement};
+use ast::{Annotation, finish, Identifier, Statement};
 use ast::Annotated as A;
 use ast::BlockNode as BN;
 use ast::Expression as E;
@@ -134,6 +134,11 @@ pub enum Error<'a> {
     StrictFunctionName(Token<'a>),
     StrictReservedWord(Token<'a>),
     StrictOctalLiteral(Token<'a>),
+    ObjectPatternAsRestParameter,
+    DefaultRestParameter,
+    ParameterAfterRestParameter,
+    StrictParamName(Token<'a>),
+    StrictParamDupe(Token<'a>),
 }
 
 impl<'a> FromError<ParseFloatError> for Error<'a> {
@@ -1221,7 +1226,7 @@ impl<'a> Ctx<'a> {
 
 struct Params<'a, Ann> {
     params: Vec<IN<'a, Ann>>,
-    //pub defaults: Vec<(&'a str, EN<'a, Ann>)>,
+    pub defaults: Vec<EN<'a, Ann>>,
     rest: Option<IN<'a, Ann>>,
     stricted: Option<Error<'a>>,
     first_restricted: Option<Error<'a>>,
@@ -1444,24 +1449,93 @@ impl<'a> Ctx<'a> {
         return Ok(finish(node, self, body));
     }
 
+    fn validate_param<Ann>(&mut self,
+                           params: &mut Params<'a, Ann>,
+                           param: Token<'a>,
+                           name: Identifier<'a>)
+        where Ann: Annotation<Ctx=Self>
+    {
+        // Guess: the vector is small enough that scanning through it is probably faster than
+        // maintaining the hash.  If wrong, we can do it differently.
+        if self.strict {
+            if is_restricted_word(name) {
+                params.stricted = Some(Error::StrictParamName(param))
+            }
+            if params.params.iter().any( |p| **p == name ) {
+                params.stricted = Some(Error::StrictParamDupe(param))
+            }
+        } else if let None = params.first_restricted {
+            if is_restricted_word(name) {
+                params.first_restricted = Some(Error::StrictParamName(param));
+            } else if is_strict_mode_reserved_word(name) {
+                params.first_restricted = Some(Error::StrictReservedWord(param));
+            } else if params.params.iter().any( |p| **p == name ) {
+                params.first_restricted = Some(Error::StrictParamDupe(param));
+            }
+        }
+    }
+
+    fn parse_param<Ann>(&mut self, params: &mut Params<'a, Ann>) -> PRes<'a, bool>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let rest = match self.lookahead {
+            tk!(T::Ellipsis) => {
+                try!(self.lex());
+                if tmatch!(self.lookahead, T::LBrack) { return Err(Error::ObjectPatternAsRestParameter) }
+                true
+            },
+            _ => false
+        };
+        let token = match self.lookahead {
+            Some(token) => token,
+            None => return Err(Error::UnexpectedEOF),
+        };
+
+        let param = try!(self.parse_variable_identifier());
+        self.validate_param(params, token, &param);
+
+        if let tk!(T::Eq) = self.lookahead {
+            if rest { return Err(Error::DefaultRestParameter) }
+
+            try!(self.lex());
+            let def = try!(self.parse_assignment_expression());
+            params.defaults.push(def);
+        }
+
+        Ok(if rest {
+            if !tmatch!(self.lookahead, T::RParen) {
+                return Err(Error::ParameterAfterRestParameter);
+            }
+            params.rest = Some(param);
+            false
+        } else {
+            params.params.push(param);
+            !tmatch!(self.lookahead, T::RParen)
+        })
+    }
+
     fn parse_params<Ann>(&mut self, first_restricted: Option<Error<'a>>) -> PRes<'a, Params<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
     {
-        let params = Vec::new();
-        expect!(self, T::LParen);
-
-        if !tmatch!(self.lookahead, T::RParen) {
-            expect!(self, T::Comma);
-        }
-
-        expect!(self, T::RParen);
-        Ok(Params {
-            params: params,
-            // defaults: defaults,
+        let mut params = Params {
+            params: Vec::new(),
+            defaults: Vec::new(),
             rest: None,
             stricted: None,
             first_restricted: first_restricted,
-        })
+        };
+
+        expect!(self, T::LParen);
+
+        if !tmatch!(self.lookahead, T::RParen) {
+            while try!(self.parse_param(&mut params)) {
+                expect!(self, T::Comma);
+            }
+        }
+
+        expect!(self, T::RParen);
+
+        Ok(params)
     }
 
     fn parse_function_expression<Ann>(&mut self) -> PRes<'a, (Option<IN<'a, Ann>>, FN<'a, Ann>, )>
@@ -1491,7 +1565,7 @@ impl<'a> Ctx<'a> {
             None => return Err(Error::UnexpectedEOF)
         };
 
-        let Params { params, /*defaults, */stricted, first_restricted, rest } =
+        let Params { params, defaults, stricted, first_restricted, rest } =
             try!(self.parse_params(first_restricted));
 
         let previous_strict = self.strict;
@@ -1508,7 +1582,7 @@ impl<'a> Ctx<'a> {
 
         Ok((id, finish(node, self, F {
             params: params,
-            // defaults: defaults,
+            defaults: defaults,
             rest: rest,
             body: body,
         })))
