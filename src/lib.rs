@@ -1259,13 +1259,32 @@ impl<'a> Ctx<'a> {
         <Ann as Annotation>::start(self)
     }
 
+    // 11.1.6 The Grouping Operator
+    fn parse_group_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        expect!(self, T::LParen);
+
+        self.state.parenthesis_count += 1;
+
+        let expr = try!(self.parse_expression());
+
+        expect!(self, T::RParen);
+
+        Ok(expr)
+    }
+
+    // 11.1 Primary Expressions
+
     fn parse_primary_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
     {
         let node = self.start::<Ann>();
         if let Some(token) = self.lookahead {
             let exp = match token.ty {
-                // LParen =>
+                T::LParen => return self.parse_group_expression(),
+                // T::LBrack
+                // T::LBrace
                 T::This => { try!(self.lex()); E::This },
                 T::Identifier(v) => { try!(self.lex()); E::Identifier(v) },
                 T::StringLiteral(s) => { try!(self.lex()); E::String(s) },
