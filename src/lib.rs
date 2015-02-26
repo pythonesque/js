@@ -1282,6 +1282,17 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    fn start<Ann>(&self) -> <Ann as Annotation>::Start
+        where Ann: Annotation<Ctx=Self>
+    {
+        <Ann as Annotation>::start(self)
+    }
+
+    fn expect_comma_separator(&mut self) -> PRes<'a, ()> {
+        // if extra.errors ...
+        Ok(expect!(self, T::Comma))
+    }
+
     fn consume_semicolon(&mut self) -> PRes<'a, ()> {
         if Some(';') == self.rest.chars().next() { try!(self.lex()); return Ok(()) }
         if let tk!(T::Semi) = self.lookahead { try!(self.lex()); return Ok(()) }
@@ -1298,15 +1309,35 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn expect_comma_separator(&mut self) -> PRes<'a, ()> {
-        // if extra.errors ...
-        Ok(expect!(self, T::Comma))
-    }
+    // 11.1.4 Array Initializer
 
-    fn start<Ann>(&self) -> <Ann as Annotation>::Start
+    fn parse_array_initializer<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
     {
-        <Ann as Annotation>::start(self)
+        let mut elements = Vec::new();
+        let node = self.start::<Ann>();
+
+        expect!(self, T::LBrace);
+
+        loop {
+            match self.lookahead {
+                tk!(T::RBrace) => break,
+                tk!(T::Comma) => {
+                    try!(self.lex());
+                    elements.push(None);
+                },
+                _ => {
+                    elements.push(Some(try!(self.parse_assignment_expression())));
+                    if !tmatch!(self.lookahead, T::RBrace) {
+                        expect!(self, T::Comma);
+                    }
+                }
+            }
+        }
+
+        try!(self.lex());
+
+        Ok(finish(&node, self, E::Array(elements)))
     }
 
     // 11.1.6 The Grouping Operator
@@ -1333,8 +1364,8 @@ impl<'a> Ctx<'a> {
         if let Some(token) = self.lookahead {
             let exp = match token.ty {
                 T::LParen => return self.parse_group_expression(),
-                // T::LBrack
-                // T::LBrace
+                T::LBrace => return self.parse_array_initializer(),
+                //T::LBrack
                 T::This => { try!(self.lex()); E::This },
                 T::Identifier(v) => { try!(self.lex()); E::Identifier(v) },
                 T::StringLiteral(s) => { try!(self.lex()); E::String(s) },

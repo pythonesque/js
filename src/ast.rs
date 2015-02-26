@@ -74,6 +74,7 @@ pub enum Expression<'a, Annotation> {
     Member(Box<ExpressionNode<'a, Annotation>>, Box<Property<'a, Annotation>>),
     Assignment(Box<ExpressionNode<'a, Annotation>>, AssignOp, Box<ExpressionNode<'a, Annotation>>),
     Call(Box<ExpressionNode<'a, Annotation>>, Vec<ExpressionNode<'a, Annotation>>),
+    Array(Vec<Option<ExpressionNode<'a, Annotation>>>),
 }
 
 pub type BlockNode<'a, Annotation> = Annotated<Annotation, Block<'a, Annotation>>;
