@@ -40,7 +40,7 @@ macro_rules! expect {
     ($e:expr, $($pat:pat),+) => {
         match $e.lookahead {
             $( tk!($pat) => try!($e.lex()), )+
-            _ => return Err(Error::UnexpectedToken)
+            o => { try!($e.lex()); return Err($e.unexpected_token(o)) }
         }
     }
 }
@@ -124,9 +124,11 @@ pub struct Options;/* {
 
 #[derive(Debug)]
 pub enum Error<'a> {
-    UnexpectedToken,
+    UnexpectedToken(Token<'a>),
+    UnexpectedChar(char),
     ExpectedHex,
-    InvalidUnicode,
+    InvalidUnicode(u32),
+    UnexpectedEscape(u32),
     ExpectedIdent,
     UnterminatedStringLiteral,
     UnexpectedEOF,
@@ -317,6 +319,14 @@ impl<'a> Annotation for () {
 }
 
 impl<'a> Ctx<'a> {
+    #[cold] #[inline(never)]
+    pub fn unexpected_char(&self, opt: Option<(char, &str)>) -> Error<'a> {
+        match opt {
+            Some((ch, _)) => Error::UnexpectedChar(ch),
+            None => Error::UnexpectedEOF,
+        }
+    }
+
     fn scan_hex_escape(&mut self, prefix: ScanHex) -> PRes<'a, u16> {
         let len = match prefix {
             ScanHex::U => 4,
@@ -341,7 +351,7 @@ impl<'a> Ctx<'a> {
     }
 
     fn scan_unicode_code_point_escape(&mut self, s: &mut Vec<u16>) -> PRes<'a, ()> {
-        if let Some('}') = self.rest.chars().next() { return Err(Error::UnexpectedToken) }
+        if let Some('}') = self.rest.chars().next() { return Err(Error::UnexpectedChar('}')) }
         let mut code = 0;
 
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
@@ -349,10 +359,10 @@ impl<'a> Ctx<'a> {
             self.rest = rest;
             match hex_digit(ch) {
                 Some(code_) => code = code * 16 + code_,
-                None if ch != '}' => return Err(Error::UnexpectedToken),
+                None if ch != '}' => return Err(Error::UnexpectedChar(ch)),
                 None => break
             }
-            if code > 0x10FFFF { return Err(Error::UnexpectedToken) }
+            if code > 0x10FFFF { return Err(Error::InvalidUnicode(code)) }
         }
         if code <= 0xFFFF {
             s.push(code as u16);
@@ -372,15 +382,15 @@ impl<'a> Ctx<'a> {
                 self.index += 1;
                 self.rest = rest;
                 match try!(self.scan_hex_escape(ScanHex::U)) as u32 {
-                    UTF16_BACKSLASH => return Err(Error::UnexpectedToken),
-                    ch if !is_identifier_start(ch) => return Err(Error::UnexpectedToken),
+                    ch @ UTF16_BACKSLASH | ch if !is_identifier_start(ch) =>
+                        return Err(Error::UnexpectedEscape(ch)),
                     ch => match char::from_u32(ch) {
                         Some(ch) => ch,
-                        None => return Err(Error::InvalidUnicode)
+                        None => return Err(Error::InvalidUnicode(ch))
                     }
                 }
             },
-            _ => return Err(Error::UnexpectedToken)
+            o => return Err(self.unexpected_char(o))
         });
 
         // '\u' (U+005C, U+0075) denotes an escaped character.
@@ -395,15 +405,15 @@ impl<'a> Ctx<'a> {
                         self.index += 1;
                         self.rest = rest;
                         id.push(match try!(self.scan_hex_escape(ScanHex::U)) as u32 {
-                            UTF16_BACKSLASH => return Err(Error::UnexpectedToken),
-                            ch if !is_identifier_part(ch) => return Err(Error::UnexpectedToken),
+                            ch @ UTF16_BACKSLASH | ch if !is_identifier_part(ch) =>
+                                return Err(Error::UnexpectedEscape(ch)),
                             ch => match char::from_u32(ch) {
                                 Some(ch) => ch,
-                                None => return Err(Error::InvalidUnicode)
+                                None => return Err(Error::InvalidUnicode(ch))
                             }
                         });
                     },
-                    _ => return Err(Error::UnexpectedToken)
+                    o => return Err(self.unexpected_char(o))
                 },
                 _ => id.push(ch)
             }
@@ -679,13 +689,13 @@ impl<'a> Ctx<'a> {
                         },
                         _ => Mod
                     },
-                    _ => return Err(Error::UnexpectedToken)
+                    ch => return Err(Error::UnexpectedChar(ch))
                 };
                 self.index += 1;
                 self.rest = rest;
                 ty
             },
-            None => return Err(Error::UnexpectedToken)
+            None => return Err(Error::UnexpectedEOF)
         };
         Ok(Token {
             ty: ty,
@@ -703,9 +713,9 @@ impl<'a> Ctx<'a> {
             self.index += 1;
             self.rest = rest;
         }
-        if begin == self.index { return Err(Error::UnexpectedToken) }
+        if begin == self.index { return Err(self.unexpected_char(self.rest.slice_shift_char())) }
         if let Some(ch) = self.rest.chars().next() {
-            if is_identifier_start(ch as u32) { return Err(Error::UnexpectedToken) }
+            if is_identifier_start(ch as u32) { return Err(Error::UnexpectedChar(ch)) }
         }
         Ok(Token {
             ty: T::NumericLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 16))),
@@ -723,9 +733,9 @@ impl<'a> Ctx<'a> {
             self.rest = rest;
         }
         // only 0b or 0B
-        if begin == self.index { return Err(Error::UnexpectedToken) }
+        if begin == self.index { return Err(self.unexpected_char(self.rest.slice_shift_char())) }
         if let Some(ch) = self.rest.chars().next() {
-            if is_identifier_start(ch as u32) || is_decimal_digit(ch) { return Err(Error::UnexpectedToken) }
+            if is_identifier_start(ch as u32) || is_decimal_digit(ch) { return Err(Error::UnexpectedChar(ch)) }
         }
         Ok(Token {
             ty: T::NumericLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 2))),
@@ -749,9 +759,9 @@ impl<'a> Ctx<'a> {
             self.rest = rest;
         }
         // only 0o or 0O
-        if begin == self.index { return Err(Error::UnexpectedToken) }
+        if begin == self.index { return Err(self.unexpected_char(self.rest.slice_shift_char())) }
         if let Some(ch) = self.rest.chars().next() {
-            if is_identifier_start(ch as u32) || is_decimal_digit(ch) { return Err(Error::UnexpectedToken) }
+            if is_identifier_start(ch as u32) || is_decimal_digit(ch) { return Err(Error::UnexpectedChar(ch)) }
         }
         Ok(Token {
             ty: T::OctalIntegerLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 8))),
@@ -839,14 +849,14 @@ impl<'a> Ctx<'a> {
                             self.index += 1;
                             self.rest = rest;
                         }
-                    } else { return Err(Error::UnexpectedToken); }
+                    } else { return Err(Error::UnexpectedChar(ch)); }
                 }
             },
             _ => {}
         }
 
         if let Some(ch) = self.rest.chars().next() {
-            if is_identifier_start(ch as u32) { return Err(Error::UnexpectedToken) }
+            if is_identifier_start(ch as u32) { return Err(Error::UnexpectedChar(ch)) }
         }
 
         Ok(Token {
@@ -946,12 +956,12 @@ impl<'a> Ctx<'a> {
                     None => return Err(Error::UnterminatedStringLiteral)
                 }
             } else if is_line_terminator(ch) {
-                return Err(Error::UnexpectedToken);
+                return Err(Error::UnexpectedChar(ch));
             } else {
                 s.extend(Utf16Encoder::new(Some(ch).into_iter()))
             }
         }
-        if self.rest.len() == 0 { return Err(Error::UnexpectedToken) }
+        if self.rest.len() == 0 { return Err(Error::UnexpectedEOF) }
         Ok(Token {
             ty: if octal { T::OctalStringLiteral(s) } else { T::EscapedStringLiteral(s) },
             line_number: self.start_line_number,
@@ -981,7 +991,7 @@ impl<'a> Ctx<'a> {
                     } else {
                         self.index += 1;
                         self.rest = rest;
-                        if is_line_terminator(ch) { return Err(Error::UnexpectedToken); }
+                        if is_line_terminator(ch) { return Err(Error::UnexpectedChar(ch)); }
                     }
                 },
                 None => { return Err(Error::UnexpectedEOF) }
@@ -1054,7 +1064,7 @@ impl<'a> Ctx<'a> {
             }
         }
 
-        Err(Error::UnexpectedToken)
+        Err(Error::UnexpectedEOF)
     }
 
     fn skip_comment(&mut self) -> PRes<'a, ()> {
@@ -1207,6 +1217,25 @@ impl<'a> Ctx<'a> {
         Ok(())
     }
 
+}
+
+struct Params<'a, Ann> {
+    params: Vec<IN<'a, Ann>>,
+    pub defaults: Vec<BEN<'a, Ann>>,
+    rest: Option<IN<'a, Ann>>,
+    stricted: Option<Error<'a>>,
+    first_restricted: Option<Error<'a>>,
+}
+
+impl<'a> Ctx<'a> {
+    #[cold] #[inline(never)]
+    pub fn unexpected_token(&self, opt: Option<Token<'a>>) -> Error<'a> {
+        match opt {
+            Some(tok) => Error::UnexpectedToken(tok),
+            None => Error::UnexpectedEOF,
+        }
+    }
+
     fn consume_semicolon(&mut self) -> PRes<'a, ()> {
         if Some(';') == self.rest.chars().next() { try!(self.lex()); return Ok(()) }
         if let Some(Token { ty: T::Semi, .. } ) = self.lookahead { try!(self.lex()); return Ok(()) }
@@ -1219,20 +1248,10 @@ impl<'a> Ctx<'a> {
 
         match self.lookahead {
             Some(Token { ty: T::RBrack, .. }) | None => Ok(()),
-            _ => Err(Error::UnexpectedToken)
+            o => Err(self.unexpected_token(o))
         }
     }
-}
 
-struct Params<'a, Ann> {
-    params: Vec<IN<'a, Ann>>,
-    pub defaults: Vec<BEN<'a, Ann>>,
-    rest: Option<IN<'a, Ann>>,
-    stricted: Option<Error<'a>>,
-    first_restricted: Option<Error<'a>>,
-}
-
-impl<'a> Ctx<'a> {
     fn start<Ann>(&self) -> <Ann as Annotation>::Start
         where Ann: Annotation<Ctx=Self>
     {
@@ -1245,6 +1264,7 @@ impl<'a> Ctx<'a> {
         let node = self.start::<Ann>();
         if let Some(token) = self.lookahead {
             let exp = match token.ty {
+                // LParen =>
                 T::This => { try!(self.lex()); E::This },
                 T::Identifier(v) => { try!(self.lex()); E::Identifier(v) },
                 T::StringLiteral(s) => { try!(self.lex()); E::String(s) },
@@ -1267,10 +1287,13 @@ impl<'a> Ctx<'a> {
                     E::Number(n)
                 },
                 T::Function => return self.parse_function_expression(node),
+                // T::Class => return self.parse_class_expression(node),
+                // Div | DivEq => ... regexp ...
                 T::BooleanLiteral(b) => { try!(self.lex()); E::Bool(b) },
                 T::NullLiteral => { try!(self.lex()); E::Null },
                 _ => {
-                    return Err(Error::UnexpectedToken)
+                    try!(self.lex());
+                    return Err(Error::UnexpectedToken(token))
                 }
             };
             Ok(finish(node, self, exp))
@@ -1348,7 +1371,7 @@ impl<'a> Ctx<'a> {
                     // tolerate
                     Err(Error::StrictReservedWord(token))
                 } else {
-                    Err(Error::UnexpectedToken)
+                    Err(Error::UnexpectedToken(token))
                 }
             },
             None => Err(Error::UnexpectedEOF)
@@ -1367,19 +1390,19 @@ impl<'a> Ctx<'a> {
     {
         let node = self.start::<Ann>();
         match self.lookahead {
-            Some(Token { ty, .. }) => match ty {
-                //T::LBrack => return parse_block(),
-                T::Semi => return self.parse_empty_statement(node),
-                _ => {}
+            //tk!(T::LBrack) => return parse_block(),
+            tk!(T::Semi) => self.parse_empty_statement(node),
+            //tk!(T::LParen) => return self.parse_expression_statement(node),
+            //Some(_) => {
+            _ => {
+                let expr = try!(self.parse_expression());
+
+                try!(self.consume_semicolon());
+
+                Ok(finish(node, self, Statement::Expression(expr)))
             },
-            None => return Err(Error::UnexpectedToken),
+            //None => Err(Error::UnexpectedEOF),
         }
-
-        let expr = try!(self.parse_expression());
-
-        try!(self.consume_semicolon());
-
-        Ok(finish(node, self, Statement::Expression(expr)))
     }
 
     fn parse_function_source_elements<Ann>(&mut self) -> PRes<'a, BN<'a, Ann>>
@@ -1447,7 +1470,7 @@ impl<'a> Ctx<'a> {
         return Ok(finish(node, self, body));
     }
 
-    fn validate_param<Ann>(&mut self,
+    fn validate_param<Ann>(&self,
                            params: &mut Params<'a, Ann>,
                            param: Token<'a>,
                            name: Identifier<'a>)
