@@ -5,7 +5,7 @@ extern crate unicode;
 
 use arena::TypedArena;
 
-use ast::{Annotation, BindingElement, finish, Identifier, Statement};
+use ast::{Annotation, BindingElement, Block, finish, Identifier, Statement};
 use ast::Annotated as A;
 use ast::BlockNode as BN;
 use ast::BindingElementNode as BEN;
@@ -1358,6 +1358,30 @@ impl<'a> Ctx<'a> {
         expr
     }
 
+    fn parse_statement_list<Ann>(&mut self) -> PRes<'a, Block<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let mut list = Vec::new();
+        while let Some(token) = self.lookahead {
+            if let T::RBrack = token.ty { break }
+            list.push(try!(self.parse_statement_list_item()));
+        }
+
+        Ok(list)
+    }
+
+    fn parse_block<Ann>(&mut self) -> PRes<'a, Block<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        expect!(self, T::LBrack);
+
+        let block = try!(self.parse_statement_list());
+
+        expect!(self, T::RBrack);
+
+        Ok(block)
+    }
+
     fn parse_variable_identifier<Ann>(&mut self) -> PRes<'a, IN<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
     {
@@ -1390,7 +1414,10 @@ impl<'a> Ctx<'a> {
     {
         let node = self.start::<Ann>();
         match self.lookahead {
-            //tk!(T::LBrack) => return parse_block(),
+            tk!(T::LBrack) => {
+                let body = try!(self.parse_block());
+                Ok(finish(node, self, Statement::Block(body)))
+            },
             tk!(T::Semi) => self.parse_empty_statement(node),
             //tk!(T::LParen) => return self.parse_expression_statement(node),
             //Some(_) => {

@@ -74,7 +74,8 @@ pub type StatementNode<'a, Annotation> = Annotated<Annotation, Statement<'a, Ann
 #[derive(Debug)]
 pub enum Statement<'a, Annotation> {
     Empty,
-    Expression(ExpressionNode<'a, Annotation>)
+    Block(Block<'a, Annotation>),
+    Expression(ExpressionNode<'a, Annotation>),
 }
 
 pub type StatementListItemNode<'a, Annotation> = Annotated<Annotation, StatementListItem<'a, Annotation>>;
