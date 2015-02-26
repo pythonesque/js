@@ -1298,6 +1298,11 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    fn expect_comma_separator(&mut self) -> PRes<'a, ()> {
+        // if extra.errors ...
+        Ok(expect!(self, T::Comma))
+    }
+
     fn start<Ann>(&self) -> <Ann as Annotation>::Start
         where Ann: Annotation<Ctx=Self>
     {
@@ -1367,6 +1372,30 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    // 11.2 Left-Hand-Side Expressions
+
+
+    fn parse_arguments<Ann>(&mut self) -> PRes<'a, Vec<EN<'a, Ann>>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let mut args = Vec::new();
+
+        expect!(self, T::LParen);
+
+        if !tmatch!(self.lookahead, T::RParen) {
+            while let Some(_) = self.lookahead {
+                args.push(try!(self.parse_assignment_expression()));
+                if let tk!(T::RParen) = self.lookahead { break }
+
+                try!(self.expect_comma_separator());
+            }
+        }
+
+        expect!(self, T::RParen);
+
+        Ok(args)
+    }
+
     fn parse_non_computed_property<Ann>(&mut self) -> PRes<'a, Property<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
     {
@@ -1408,7 +1437,10 @@ impl<'a> Ctx<'a> {
                         let property = try!(self.parse_non_computed_member());
                         E::Member(Box::new(expr), Box::new(property))
                     },
-                    // tk!(T::LParen) => ,
+                    tk!(T::LParen) => {
+                        let args = try!(self.parse_arguments());
+                        E::Call(Box::new(expr), args)
+                    },
                     // tk!(T::LBrace) => ,
                     _ => { break }
                 };
