@@ -1,4 +1,4 @@
-#![feature(box_syntax,core,collections,rustc_private,unicode)]
+#![feature(core,collections,rustc_private,unicode)]
 
 extern crate arena;
 extern crate unicode;
@@ -12,7 +12,6 @@ use ast::Expression as E;
 use ast::ExpressionNode as EN;
 use ast::IdentifierNode as IN;
 use ast::Function as F;
-use ast::FunctionNode as FN;
 use ast::ScriptNode as ScriptN;
 use ast::StatementListItem as SLI;
 use ast::StatementListItemNode as SLIN;
@@ -1265,10 +1264,7 @@ impl<'a> Ctx<'a> {
                     try!(self.lex());
                     E::Number(n)
                 },
-                T::Function => {
-                    let (name, function) = try!(self.parse_function_expression());
-                    E::Function(name, function)
-                },
+                T::Function => return self.parse_function_expression(node),
                 T::BooleanLiteral(b) => { try!(self.lex()); E::Bool(b) },
                 T::NullLiteral => { try!(self.lex()); E::Null },
                 _ => {
@@ -1538,29 +1534,80 @@ impl<'a> Ctx<'a> {
         Ok(params)
     }
 
-    fn parse_function_expression<Ann>(&mut self) -> PRes<'a, (Option<IN<'a, Ann>>, FN<'a, Ann>, )>
+    fn parse_function_declaration<Ann>(&mut self,
+                                       node: <Ann as Annotation>::Start
+                                      ) -> PRes<'a, SLIN<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
     {
-        let node = self.start::<Ann>();
-
         expect!(self, T::Function);
-        let (id, first_restricted) = match self.lookahead {
-            tk!(T::LParen) => (None, None),
+        let id;
+        let first_restricted;
+        match self.lookahead {
             Some(token) => {
-                let id = try!(self.parse_variable_identifier());
-                if self.strict {
+                id = try!(self.parse_variable_identifier());
+                first_restricted = if self.strict {
                     if is_restricted_word(&id) {
                         // tolerate...
                         return Err(Error::StrictFunctionName(token))
-                    } else { (None, None) }
+                    } else { None }
                 } else {
-                     let first_restricted = if is_restricted_word(&id) {
+                     if is_restricted_word(&id) {
                          Some(Error::StrictFunctionName(token))
                      } else if is_strict_mode_reserved_word(&id) {
                          Some(Error::StrictReservedWord(token))
-                     } else { None };
-                     (Some(id), first_restricted)
-                }
+                     } else { None }
+                };
+            },
+            None => return Err(Error::UnexpectedEOF)
+        }
+
+        let Params { params, defaults, stricted, first_restricted, rest } =
+            try!(self.parse_params(first_restricted));
+
+        let previous_strict = self.strict;
+        let body = try!(self.parse_function_source_elements());
+        if self.strict {
+            if let Some(e) = first_restricted { return Err(e) }
+            // tolerate
+            if let Some(e) = stricted { return Err(e) }
+        }
+        self.strict = previous_strict;
+
+        Ok(finish(node, self, SLI::Function(id, F {
+            params: params,
+            defaults: defaults,
+            rest: rest,
+            body: body,
+        })))
+    }
+
+    fn parse_function_expression<Ann>(&mut self,
+                                      node: <Ann as Annotation>::Start
+                                     ) -> PRes<'a, EN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        expect!(self, T::Function);
+        let first_restricted;
+        let id = match self.lookahead {
+            tk!(T::LParen) => {
+                first_restricted = None;
+                None
+            },
+            Some(token) => {
+                let id = try!(self.parse_variable_identifier());
+                first_restricted = if self.strict {
+                    if is_restricted_word(&id) {
+                        // tolerate...
+                        return Err(Error::StrictFunctionName(token))
+                    } else { None }
+                } else {
+                     if is_restricted_word(&id) {
+                         Some(Error::StrictFunctionName(token))
+                     } else if is_strict_mode_reserved_word(&id) {
+                         Some(Error::StrictReservedWord(token))
+                     } else { None }
+                };
+                Some(id)
             },
             None => return Err(Error::UnexpectedEOF)
         };
@@ -1569,18 +1616,15 @@ impl<'a> Ctx<'a> {
             try!(self.parse_params(first_restricted));
 
         let previous_strict = self.strict;
-
         let body = try!(self.parse_function_source_elements());
-
         if self.strict {
             if let Some(e) = first_restricted { return Err(e) }
             // tolerate
             if let Some(e) = stricted { return Err(e) }
         }
-
         self.strict = previous_strict;
 
-        Ok((id, finish(node, self, F {
+        Ok(finish(node, self, E::Function(id, F {
             params: params,
             defaults: defaults,
             rest: rest,
@@ -1592,7 +1636,11 @@ impl<'a> Ctx<'a> {
         where Ann: Annotation<Ctx=Self>
     {
         let node = self.start::<Ann>();
-        self.parse_statement().map( |stmt| finish(node, self, SLI::Statement(stmt)) )
+
+        match self.lookahead {
+            tk!(T::Function) => self.parse_function_declaration(node),
+            _ => self.parse_statement().map( |stmt| finish(node, self, SLI::Statement(stmt)) )
+        }
     }
 
     fn parse_script_body<Ann>(&mut self) -> PRes<'a, Vec<SLIN<'a, Ann>>>

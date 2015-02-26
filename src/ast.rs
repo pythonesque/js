@@ -39,7 +39,6 @@ impl<Annotation, T> DerefMut for Annotated<Annotation, T> {
 pub type IdentifierNode<'a, Annotation> = Annotated<Annotation, Identifier<'a>>;
 pub type Identifier<'a> = &'a str;
 
-pub type FunctionNode<'a, Annotation> = Annotated<Annotation, Function<'a, Annotation>>;
 #[derive(Debug)]
 pub struct Function<'a, Annotation> {
     pub params: Vec<IdentifierNode<'a, Annotation>>,
@@ -57,7 +56,7 @@ pub enum Expression<'a, Annotation> {
     Null,
     EscapedString(&'a [u16]),
     Number(f64),
-    Function(Option<IdentifierNode<'a, Annotation>>, FunctionNode<'a, Annotation>),
+    Function(Option<IdentifierNode<'a, Annotation>>, Function<'a, Annotation>),
 }
 
 pub type BlockNode<'a, Annotation> = Annotated<Annotation, Block<'a, Annotation>>;
@@ -74,7 +73,7 @@ pub type StatementListItemNode<'a, Annotation> = Annotated<Annotation, Statement
 #[derive(Debug)]
 pub enum StatementListItem<'a, Annotation> {
     Statement(StatementNode<'a, Annotation>),
-    //FunctionDeclaration(IdentifierNode<'a, Annotation>, FunctionNode<'a, Annotation>),
+    Function(IdentifierNode<'a, Annotation>, Function<'a, Annotation>),
 }
 
 pub type ScriptNode<'a, Annotation> = Annotated<Annotation, Script<'a, Annotation>>;
