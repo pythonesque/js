@@ -5,7 +5,7 @@ extern crate unicode;
 
 use arena::TypedArena;
 
-use ast::{Annotation, BindingElement, Block, finish, Identifier, Statement};
+use ast::{Annotation, BindingElement, Block, finish, Identifier, Property, Statement};
 use ast::Annotated as A;
 use ast::BlockNode as BN;
 use ast::BindingElementNode as BEN;
@@ -304,6 +304,36 @@ fn keyword<'a>(id: &str, strict: bool) -> Option<T<'a>> {
     })
 }
 
+pub fn identifier_name<'a>(tok: &Token<'a>) -> Option<&'a str> {
+    use ast::Tok::*;
+
+    Some(match tok.ty {
+        T::Identifier(i) => i,
+
+        If => "if", In => "in", Do => "do",
+        Var => "var", For => "for", New => "new", Try => "try", Let => "let",
+        This => "this", Else => "else", Case => "case", Void => "void", With => "with", Enum => "enum",
+        While => "while", Break => "break", Catch => "catch", Throw => "throw", Const => "const", Yield => "yield", Class => "class", Super => "super",
+        Return => "return", TypeOf => "typeof", Delete => "delete", Switch => "switch", Export => "export", Import => "import",
+        Default => "default", Finally => "finally", Extends => "extends",
+        Function => "function", Continue => "continue", Debugger => "debugger",
+        InstanceOf => "instanceof",
+
+        Implements => "implements",
+        Interface => "interface",
+        Package => "package",
+        Private => "private",
+        Protected => "protected",
+        Public => "public",
+        Static => "static",
+
+        BooleanLiteral(true) => "true", BooleanLiteral(false) => "false",
+        NullLiteral => "null",
+
+        _ => return None
+    })
+}
+
 enum ScanHex { U, X }
 
 impl<'a> Annotation for () {
@@ -314,7 +344,7 @@ impl<'a> Annotation for () {
         ()
     }
 
-    fn finish(_: (), _: &Ctx) -> () {
+    fn finish(_: &(), _: &Ctx) -> () {
         ()
     }
 }
@@ -1316,18 +1346,63 @@ impl<'a> Ctx<'a> {
                     return Err(Error::UnexpectedToken(token))
                 }
             };
-            Ok(finish(node, self, exp))
+            Ok(finish(&node, self, exp))
         } else {
             return Err(Error::UnexpectedEOF)
         }
     }
 
+    fn parse_non_computed_property<Ann>(&mut self) -> PRes<'a, Property<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let node = self.start::<Ann>();
+
+        let token = self.lookahead;
+        try!(self.lex());
+
+        match token.as_ref().and_then(identifier_name) {
+            Some(name) => Ok(Property::Literal(finish(&node, self, name))),
+            None => Err(self.unexpected_token(token))
+        }
+    }
+
+    fn parse_non_computed_member<Ann>(&mut self) -> PRes<'a, Property<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        expect!(self, T::Dot);
+
+        self.parse_non_computed_property()
+    }
+
     fn parse_left_hand_side_expression_allow_call<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
     {
-        let expr = self.parse_primary_expression();
+        let previous_allow_in = self.state.allow_in;
 
-        expr
+        let node = self.start::<Ann>();
+        self.state.allow_in = true;
+        let mut expr = try!(match self.lookahead {
+            //tk!(T::New) => self.parse_new_expression(),
+            _ => self.parse_primary_expression()
+        });
+
+        loop {
+            expr = {
+                let expr = match self.lookahead {
+                    tk!(T::Dot) => {
+                        let property = try!(self.parse_non_computed_member());
+                        E::Member(Box::new(expr), Box::new(property))
+                    },
+                    // tk!(T::LParen) => ,
+                    // tk!(T::LBrace) => ,
+                    _ => { break }
+                };
+                finish(&node, self, expr)
+            }
+        }
+        self.state.allow_in = previous_allow_in;
+
+        Ok(expr)
     }
 
     fn parse_postfix_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
@@ -1409,7 +1484,7 @@ impl<'a> Ctx<'a> {
         let token = self.lookahead;
         try!(self.lex());
         match token {
-            tk!(T::Identifier(i)) => Ok(finish(node, self, i)),
+            tk!(T::Identifier(i)) => Ok(finish(&node, self, i)),
             Some(token) => {
                 if self.strict && is_strict_mode_reserved(&token.ty) {
                     // tolerate
@@ -1444,7 +1519,7 @@ impl<'a> Ctx<'a> {
             _ => BindingElement::Uninitialized(id)
         };
 
-        Ok(finish(node, self, binding))
+        Ok(finish(&node, self, binding))
     }
 
     fn parse_variable_declaration_list<Ann>(&mut self) -> PRes<'a, Vec<BEN<'a, Ann>>>
@@ -1475,14 +1550,14 @@ impl<'a> Ctx<'a> {
 
         try!(self.consume_semicolon());
 
-        Ok(finish(node, self, Statement::Variable(declarations)))
+        Ok(finish(&node, self, Statement::Variable(declarations)))
     }
 
     fn parse_empty_statement<Ann>(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
     {
         expect!(self, T::Semi);
-        Ok(finish(node, self, Statement::Empty))
+        Ok(finish(&node, self, Statement::Empty))
     }
 
     // NOTE: This seems to be redundant.
@@ -1501,7 +1576,7 @@ impl<'a> Ctx<'a> {
         match self.lookahead {
             tk!(T::LBrack) => {
                 let body = try!(self.parse_block());
-                Ok(finish(node, self, Statement::Block(body)))
+                Ok(finish(&node, self, Statement::Block(body)))
             },
             tk!(T::Semi) => self.parse_empty_statement(node),
             //tk!(T::LParen) => return self.parse_expression_statement(node),
@@ -1512,7 +1587,7 @@ impl<'a> Ctx<'a> {
 
                 try!(self.consume_semicolon());
 
-                Ok(finish(node, self, Statement::Expression(expr)))
+                Ok(finish(&node, self, Statement::Expression(expr)))
             },
             //None => Err(Error::UnexpectedEOF),
         }
@@ -1580,7 +1655,7 @@ impl<'a> Ctx<'a> {
             .. old_state
         };
 
-        return Ok(finish(node, self, body));
+        return Ok(finish(&node, self, body));
     }
 
     fn validate_param<Ann>(&self,
@@ -1634,7 +1709,7 @@ impl<'a> Ctx<'a> {
 
             try!(self.lex());
             let def = try!(self.parse_assignment_expression());
-            params.defaults.push(finish(node, self, BindingElement::SingleName(param, def)));
+            params.defaults.push(finish(&node, self, BindingElement::SingleName(param, def)));
         } else if rest {
             if !tmatch!(self.lookahead, T::RParen) {
                 return Err(Error::ParameterAfterRestParameter);
@@ -1645,7 +1720,7 @@ impl<'a> Ctx<'a> {
             params.params.push(param);
         } else {
             // Uninitialized default
-            params.defaults.push(finish(node, self, BindingElement::Uninitialized(param)));
+            params.defaults.push(finish(&node, self, BindingElement::Uninitialized(param)));
         }
         Ok(!tmatch!(self.lookahead, T::RParen))
     }
@@ -1713,7 +1788,7 @@ impl<'a> Ctx<'a> {
         }
         self.strict = previous_strict;
 
-        Ok(finish(node, self, SLI::Function(id, F {
+        Ok(finish(&node, self, SLI::Function(id, F {
             params: params,
             defaults: defaults,
             rest: rest,
@@ -1764,7 +1839,7 @@ impl<'a> Ctx<'a> {
         }
         self.strict = previous_strict;
 
-        Ok(finish(node, self, E::Function(id, F {
+        Ok(finish(&node, self, E::Function(id, F {
             params: params,
             defaults: defaults,
             rest: rest,
@@ -1779,7 +1854,7 @@ impl<'a> Ctx<'a> {
 
         match self.lookahead {
             tk!(T::Function) => self.parse_function_declaration(node),
-            _ => self.parse_statement().map( |stmt| finish(node, self, SLI::Statement(stmt)) )
+            _ => self.parse_statement().map( |stmt| finish(&node, self, SLI::Statement(stmt)) )
         }
     }
 
@@ -1830,7 +1905,7 @@ impl<'a> Ctx<'a> {
         self.strict = false;
 
         let body = try!(self.parse_script_body());
-        Ok(finish(node, self, body))
+        Ok(finish(&node, self, body))
     }
 }
 

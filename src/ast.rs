@@ -14,10 +14,10 @@ pub trait Annotation {
     type Start;
 
     fn start(ctx: &Self::Ctx) -> Self::Start;
-    fn finish(start: Self::Start, ctx: &Self::Ctx) -> Self;
+    fn finish(start: &Self::Start, ctx: &Self::Ctx) -> Self;
 }
 
-pub fn finish<Ann, T>(start: <Ann as Annotation>::Start,
+pub fn finish<Ann, T>(start: &<Ann as Annotation>::Start,
                       ctx: &mut <Ann as Annotation>::Ctx,
                       inner: T,
                      ) -> Annotated<Ann, T>
@@ -54,6 +54,12 @@ pub struct Function<'a, Annotation> {
     pub body: BlockNode<'a, Annotation>,
 }
 
+#[derive(Debug)]
+pub enum Property<'a, Annotation> {
+    //Computed(ExpressionNode<'a, Annotation>),
+    Literal(IdentifierNode<'a, Annotation>),
+}
+
 pub type ExpressionNode<'a, Annotation> = Annotated<Annotation, Expression<'a, Annotation>>;
 #[derive(Debug)]
 pub enum Expression<'a, Annotation> {
@@ -65,6 +71,7 @@ pub enum Expression<'a, Annotation> {
     EscapedString(&'a [u16]),
     Number(f64),
     Function(Option<IdentifierNode<'a, Annotation>>, Function<'a, Annotation>),
+    Member(Box<ExpressionNode<'a, Annotation>>, Box<Property<'a, Annotation>>),
 }
 
 pub type BlockNode<'a, Annotation> = Annotated<Annotation, Block<'a, Annotation>>;
