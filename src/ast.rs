@@ -75,6 +75,7 @@ pub type StatementNode<'a, Annotation> = Annotated<Annotation, Statement<'a, Ann
 pub enum Statement<'a, Annotation> {
     Empty,
     Block(Block<'a, Annotation>),
+    Variable(Vec<BindingElementNode<'a, Annotation>>),
     Expression(ExpressionNode<'a, Annotation>),
 }
 

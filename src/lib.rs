@@ -105,7 +105,7 @@ pub struct Token<'a> {
 
 impl<'a> fmt::Debug for Token<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.ty.fmt(f)
+        write!(f, "{}:{}: {:?}", self.line_number, self.start - self.line_start + 1, self.ty)
     }
 }
 
@@ -141,6 +141,7 @@ pub enum Error<'a> {
     ParameterAfterRestParameter,
     StrictParamName(Token<'a>),
     StrictParamDupe(Token<'a>),
+    StrictVarName,
 }
 
 impl<'a> FromError<ParseFloatError> for Error<'a> {
@@ -1238,7 +1239,7 @@ impl<'a> Ctx<'a> {
 
     fn consume_semicolon(&mut self) -> PRes<'a, ()> {
         if Some(';') == self.rest.chars().next() { try!(self.lex()); return Ok(()) }
-        if let Some(Token { ty: T::Semi, .. } ) = self.lookahead { try!(self.lex()); return Ok(()) }
+        if let tk!(T::Semi) = self.lookahead { try!(self.lex()); return Ok(()) }
 
         if self.has_line_terminator { return Ok(()) }
 
@@ -1247,7 +1248,7 @@ impl<'a> Ctx<'a> {
         self.last_line_start = Some(self.start_line_start);
 
         match self.lookahead {
-            Some(Token { ty: T::RBrack, .. }) | None => Ok(()),
+            tk!(T::RBrack) | None => Ok(()),
             o => Err(self.unexpected_token(o))
         }
     }
@@ -1389,7 +1390,7 @@ impl<'a> Ctx<'a> {
         let token = self.lookahead;
         try!(self.lex());
         match token {
-            Some(Token { ty: T::Identifier(i), .. }) => Ok(finish(node, self, i)),
+            tk!(T::Identifier(i)) => Ok(finish(node, self, i)),
             Some(token) => {
                 if self.strict && is_strict_mode_reserved(&token.ty) {
                     // tolerate
@@ -1402,12 +1403,77 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    fn parse_variable_declaration<Ann>(&mut self) -> PRes<'a, BEN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let node = self.start::<Ann>();
+
+        let id = try!(self.parse_variable_identifier());
+
+        // 12.2.1
+        if self.strict && is_restricted_word(&id) {
+            // tolerate
+            return Err(Error::StrictVarName)
+        }
+
+        let binding = match self.lookahead {
+            tk!(T::Eq) => {
+                try!(self.lex());
+                let init = try!(self.parse_assignment_expression());
+                BindingElement::SingleName(id, init)
+            },
+            _ => BindingElement::Uninitialized(id)
+        };
+
+        Ok(finish(node, self, binding))
+    }
+
+    fn parse_variable_declaration_list<Ann>(&mut self) -> PRes<'a, Vec<BEN<'a, Ann>>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let mut list = Vec::new();
+
+        loop {
+            list.push(try!(self.parse_variable_declaration()));
+            match self.lookahead {
+                tk!(T::Comma) => {
+                    try!(self.lex());
+                    if let None = self.lookahead { break }
+                }
+                _ => break
+            }
+        }
+
+        Ok(list)
+    }
+
+    fn parse_variable_statement<Ann>(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        expect!(self, T::Var);
+
+        let declarations = try!(self.parse_variable_declaration_list());
+
+        try!(self.consume_semicolon());
+
+        Ok(finish(node, self, Statement::Variable(declarations)))
+    }
+
     fn parse_empty_statement<Ann>(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
     {
         expect!(self, T::Semi);
         Ok(finish(node, self, Statement::Empty))
     }
+
+    // NOTE: This seems to be redundant.
+    /*fn parse_expression_statement<Ann>(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let expr = try!(self.parse_expression());
+        expect!(self, T::Semi);
+        Ok(finish(node, self, Statement::Expression(expr)))
+    }*/
 
     fn parse_statement<Ann>(&mut self) -> PRes<'a, SN<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
@@ -1420,6 +1486,7 @@ impl<'a> Ctx<'a> {
             },
             tk!(T::Semi) => self.parse_empty_statement(node),
             //tk!(T::LParen) => return self.parse_expression_statement(node),
+            tk!(T::Var) => self.parse_variable_statement(node),
             //Some(_) => {
             _ => {
                 let expr = try!(self.parse_expression());
