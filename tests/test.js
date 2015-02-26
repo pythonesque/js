@@ -1,6 +1,6 @@
 // Testing comments
 "use strict";;;;
 
-function foo() {
+fun\u0063tion foo() {
   3 ; 4 ; 5
 }

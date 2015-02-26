@@ -53,6 +53,9 @@ pub type ExpressionNode<'a, Annotation> = Annotated<Annotation, Expression<'a, A
 pub enum Expression<'a, Annotation> {
     Identifier(&'a str),
     String(&'a str),
+    Bool(bool),
+    Null,
+    EscapedString(&'a [u16]),
     Number(f64),
     Function(Option<IdentifierNode<'a, Annotation>>, FunctionNode<'a, Annotation>),
 }
@@ -83,9 +86,11 @@ pub enum Tok<'a> {
     Identifier(&'a str),
     NullLiteral,
     BooleanLiteral(bool),
-    OctalLiteral(&'a str),
     StringLiteral(&'a str),
+    EscapedStringLiteral(&'a [u16]),
+    OctalStringLiteral(&'a [u16]),
     NumericLiteral(f64),
+    OctalIntegerLiteral(f64),
 
     // Keywords
     If, In, Do,

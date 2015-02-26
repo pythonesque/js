@@ -1,6 +1,7 @@
-#![feature(box_syntax,core,collections,rustc_private)]
+#![feature(box_syntax,core,collections,rustc_private,unicode)]
 
 extern crate arena;
+extern crate unicode;
 
 use arena::TypedArena;
 
@@ -25,6 +26,8 @@ use std::fmt;
 use std::mem;
 use std::num::{self, ParseFloatError};
 
+use unicode::str::Utf16Encoder;
+
 mod ast;
 
 pub type Pos = usize;
@@ -34,18 +37,20 @@ macro_rules! tk {
 }
 
 macro_rules! expect {
-    ($e:expr, $pat:pat) => {
-        if let Some(Token { ty: $pat , .. }) = $e.lookahead {
-            try!($e.lex());
-        } else {
-            return Err(Error::UnexpectedToken)
+    ($e:expr, $($pat:pat),+) => {
+        match $e.lookahead {
+            $( tk!($pat) => try!($e.lex()), )+
+            _ => return Err(Error::UnexpectedToken)
         }
     }
 }
 
 macro_rules! tmatch {
-    ($e:expr, $pat:pat) => {
-        if let Some(Token { ty: $pat, .. }) = $e { true } else { false }
+    ($e:expr, $($pat:pat),+) => {
+        match $e {
+            $( tk!($pat) => true, )+
+            _ => false
+        }
     }
 }
 
@@ -61,7 +66,8 @@ pub struct State<'a> {
 }
 
 pub struct RootCtx {
-    arena: TypedArena<String>
+    string_arena: TypedArena<Vec<u16>>,
+    ident_arena: TypedArena<String>,
 }
 
 pub struct Ctx<'a> {
@@ -127,6 +133,7 @@ pub enum Error<'a> {
     ParseFloat(ParseFloatError),
     StrictFunctionName(Token<'a>),
     StrictReservedWord(Token<'a>),
+    StrictOctalLiteral(Token<'a>),
 }
 
 impl<'a> FromError<ParseFloatError> for Error<'a> {
@@ -140,7 +147,8 @@ pub type PRes<'a, T> = Result<T, Error<'a>>;
 impl<'a> RootCtx {
     pub fn new() -> Self {
         RootCtx {
-            arena: TypedArena::new(),
+            string_arena: TypedArena::new(),
+            ident_arena: TypedArena::new(),
         }
     }
 }
@@ -160,25 +168,35 @@ fn is_line_terminator(ch: char) -> bool {
     }
 }
 
-fn is_identifier_start(ch: char) -> bool {
+const UTF16_DOLLAR: u32 = '$' as u32;
+const UTF16__: u32 = '_' as u32;
+const UTF16_A: u32 = 'A' as u32;
+const UTF16_Z: u32 = 'Z' as u32;
+#[allow(non_upper_case_globals)] const UTF16_a: u32 = 'a' as u32;
+#[allow(non_upper_case_globals)] const UTF16_z: u32 = 'z' as u32;
+const UTF16_BACKSLASH: u32 = '\\' as u32;
+const UTF16_0: u32 = '0' as u32;
+const UTF16_9: u32 = '9' as u32;
+
+fn is_identifier_start(ch: u32) -> bool {
     match ch {
-        '$' | '_' |
-        'A'...'Z' |
-        'a'...'z' |
-        '\\'
+        UTF16_DOLLAR | UTF16__ |
+        UTF16_A ... UTF16_Z |
+        UTF16_a ... UTF16_z |
+        UTF16_BACKSLASH
         // | ch if non_ascii_regex_that_is_ridiculous
         => true,
         _ => false
     }
 }
 
-fn is_identifier_part(ch: char) -> bool {
+fn is_identifier_part(ch: u32) -> bool {
     match ch {
-        '$' | '_' |
-        'A'...'Z' |
-        'a'...'z' |
-        '0'...'9' |
-        '\\'
+        UTF16_DOLLAR | UTF16__ |
+        UTF16_A ... UTF16_Z |
+        UTF16_a ... UTF16_z |
+        UTF16_0 ... UTF16_9 |
+        UTF16_BACKSLASH
         // | ch if non_ascii_regex_that_is_ridiculous
         => true,
         _ => false
@@ -230,8 +248,18 @@ fn hex_digit(ch: char) -> Option<u32> {
 
 fn is_strict_mode_reserved_word(id: &str) -> bool {
     match id {
-        "implements" | "interface" | "package" | "private" | "protected" | "public" | "static" =>
-            true,
+        "implements" | "interface" | "package" | "private" | "protected" | "public" | "static" |
+            "yield" | "let" => true,
+        _ => false
+    }
+}
+
+fn is_strict_mode_reserved<'a>(tok: &T<'a>) -> bool {
+    use ast::Tok::*;
+
+    match *tok {
+        Implements | Interface | Package | Private | Protected | Public | Static |
+            Yield | Let => true,
         _ => false
     }
 }
@@ -284,7 +312,7 @@ impl<'a> Annotation for () {
 }
 
 impl<'a> Ctx<'a> {
-    fn scan_hex_escape(&mut self, prefix: ScanHex) -> PRes<'a, char> {
+    fn scan_hex_escape(&mut self, prefix: ScanHex) -> PRes<'a, u16> {
         let len = match prefix {
             ScanHex::U => 4,
             ScanHex::X => 2,
@@ -297,20 +325,17 @@ impl<'a> Ctx<'a> {
                 Some(i) => {
                     self.index += 1;
                     self.rest = rest;
-                    code = code * 16 + i;
+                    code = code * 16 + i as u16;
                 },
                 None => return Err(Error::ExpectedHex)
             }
             i += 1;
         }
         if self.rest.len() == 0 { return Err(Error::UnexpectedEOF) }
-        match char::from_u32(code) {
-            Some(ch) => Ok(ch),
-            None => Err(Error::InvalidUnicode)
-        }
+        Ok(code)
     }
 
-    fn scan_unicode_code_point_escape(&mut self) -> PRes<'a, char> {
+    fn scan_unicode_code_point_escape(&mut self, s: &mut Vec<u16>) -> PRes<'a, ()> {
         if let Some('}') = self.rest.chars().next() { return Err(Error::UnexpectedToken) }
         let mut code = 0;
 
@@ -324,34 +349,38 @@ impl<'a> Ctx<'a> {
             }
             if code > 0x10FFFF { return Err(Error::UnexpectedToken) }
         }
-        //if (code <= 0xFFFF) {
-            return match char::from_u32(code) {
-                Some(ch) => Ok(ch),
-                None => Err(Error::InvalidUnicode)
-            }
-        //}
-        //let cu1 = ((code - 0x10000) >> 10) + 0xD800;
-        //let cu2 = ((code - 0x10000) & 1023) + 0xDC00;
+        if code <= 0xFFFF {
+            s.push(code as u16);
+        } else {
+            let cu1 = (((code - 0x10000) >> 10) + 0xD800) as u16;
+            let cu2 = (((code - 0x10000) & 1023) + 0xDC00) as u16;
+            s.push(cu1);
+            s.push(cu2);
+        }
+        Ok(())
     }
 
-    fn get_escaped_identifier(&mut self) -> PRes<'a, &'a str> {
+    fn get_escaped_identifier(&mut self, id: &mut String) -> PRes<'a, ()> {
         // '\u' (U+005C, U+0075) denotes an escaped character.
-        let mut id = match self.rest.slice_shift_char() {
+        id.push(match self.rest.slice_shift_char() {
             Some(('u', rest)) => {
                 self.index += 1;
                 self.rest = rest;
-                match try!(self.scan_hex_escape(ScanHex::U)) {
-                    '\\' => return Err(Error::UnexpectedToken),
+                match try!(self.scan_hex_escape(ScanHex::U)) as u32 {
+                    UTF16_BACKSLASH => return Err(Error::UnexpectedToken),
                     ch if !is_identifier_start(ch) => return Err(Error::UnexpectedToken),
-                    ch => ch
-                }.to_string()
+                    ch => match char::from_u32(ch) {
+                        Some(ch) => ch,
+                        None => return Err(Error::InvalidUnicode)
+                    }
+                }
             },
             _ => return Err(Error::UnexpectedToken)
-        };
+        });
 
         // '\u' (U+005C, U+0075) denotes an escaped character.
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
-            if !is_identifier_part(ch) { break }
+            if !is_identifier_part(ch as u32) { break }
             self.index += 1;
             self.rest = rest;
 
@@ -360,10 +389,13 @@ impl<'a> Ctx<'a> {
                     Some(('u', rest)) => {
                         self.index += 1;
                         self.rest = rest;
-                        id.push(match try!(self.scan_hex_escape(ScanHex::U)) {
-                            '\\' => return Err(Error::UnexpectedToken),
+                        id.push(match try!(self.scan_hex_escape(ScanHex::U)) as u32 {
+                            UTF16_BACKSLASH => return Err(Error::UnexpectedToken),
                             ch if !is_identifier_part(ch) => return Err(Error::UnexpectedToken),
-                            ch => ch
+                            ch => match char::from_u32(ch) {
+                                Some(ch) => ch,
+                                None => return Err(Error::InvalidUnicode)
+                            }
                         });
                     },
                     _ => return Err(Error::UnexpectedToken)
@@ -371,23 +403,23 @@ impl<'a> Ctx<'a> {
                 _ => id.push(ch)
             }
         }
-
-        Ok(&**self.root.arena.alloc(id))
+        Ok(())
     }
 
     fn get_identifier(&mut self) -> PRes<'a, &'a str> {
         let start_index = self.index;
-        let start_rest = self.rest;
 
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
             match ch {
                 '\\' => {
                     // Blackslash (U+005C) marks Unicode escape sequence.
-                    self.index = start_index;
-                    self.rest = start_rest;
-                    return self.get_escaped_identifier();
+                    let mut id = self.root.ident_arena
+                        .alloc(self.source[start_index..self.index].to_string());
+                    self.index += 1;
+                    self.rest = rest;
+                    return self.get_escaped_identifier(&mut id).and(Ok(id));
                 },
-                ch if is_identifier_part(ch) => {
+                ch if is_identifier_part(ch as u32) => {
                     self.index += 1;
                     self.rest = rest;
                 },
@@ -404,7 +436,8 @@ impl<'a> Ctx<'a> {
             Some(('\\', rest)) => {
                 self.index += 1;
                 self.rest = rest;
-                self.get_escaped_identifier()
+                let mut id = self.root.ident_arena.alloc(String::new());
+                self.get_escaped_identifier(id).and(Ok(&**id))
             },
             _ => self.get_identifier()
         });
@@ -667,7 +700,7 @@ impl<'a> Ctx<'a> {
         }
         if begin == self.index { return Err(Error::UnexpectedToken) }
         if let Some(ch) = self.rest.chars().next() {
-            if is_identifier_start(ch) { return Err(Error::UnexpectedToken) }
+            if is_identifier_start(ch as u32) { return Err(Error::UnexpectedToken) }
         }
         Ok(Token {
             ty: T::NumericLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 16))),
@@ -687,7 +720,7 @@ impl<'a> Ctx<'a> {
         // only 0b or 0B
         if begin == self.index { return Err(Error::UnexpectedToken) }
         if let Some(ch) = self.rest.chars().next() {
-            if is_identifier_start(ch) || is_decimal_digit(ch) { return Err(Error::UnexpectedToken) }
+            if is_identifier_start(ch as u32) || is_decimal_digit(ch) { return Err(Error::UnexpectedToken) }
         }
         Ok(Token {
             ty: T::NumericLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 2))),
@@ -713,10 +746,10 @@ impl<'a> Ctx<'a> {
         // only 0o or 0O
         if begin == self.index { return Err(Error::UnexpectedToken) }
         if let Some(ch) = self.rest.chars().next() {
-            if is_identifier_start(ch) || is_decimal_digit(ch) { return Err(Error::UnexpectedToken) }
+            if is_identifier_start(ch as u32) || is_decimal_digit(ch) { return Err(Error::UnexpectedToken) }
         }
         Ok(Token {
-            ty: T::NumericLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 8))),
+            ty: T::OctalIntegerLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 8))),
             line_number: self.line_number,
             line_start: self.line_start,
             start: start,
@@ -808,7 +841,7 @@ impl<'a> Ctx<'a> {
         }
 
         if let Some(ch) = self.rest.chars().next() {
-            if is_identifier_start(ch) { return Err(Error::UnexpectedToken) }
+            if is_identifier_start(ch as u32) { return Err(Error::UnexpectedToken) }
         }
 
         Ok(Token {
@@ -820,10 +853,10 @@ impl<'a> Ctx<'a> {
         })
     }
 
-    fn scan_string_literal(&mut self, quote: char) -> PRes<'a, Token<'a>> {
-        let mut s = String::new();
+    #[inline]
+    fn scan_escaped_string_literal(&mut self, quote: char, start: Pos, s: &'a mut Vec<u16>) -> PRes<'a, Token<'a>>
+    {
         let mut octal = false;
-        let start = self.index - 1;
 
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
             self.index += 1;
@@ -842,29 +875,28 @@ impl<'a> Ctx<'a> {
                                         Some(('{', rest)) => {
                                             self.index += 1;
                                             self.rest = rest;
-                                            s.push(try!(self.scan_unicode_code_point_escape()));
+                                            try!(self.scan_unicode_code_point_escape(s));
                                         },
                                         _ => {
                                             let restore = self.index;
                                             let prefix = if ch == 'u' { ScanHex::U } else { ScanHex::X };
                                             match self.scan_hex_escape(prefix) {
                                                 Ok(c) => s.push(c),
-                                                //Err(Error::InvalidUnicode) => return Err(Error::InvalidUnicode),
                                                 _ => {
                                                     self.index = restore;
                                                     self.rest = rest;
-                                                    s.push(ch);
+                                                    s.extend(Utf16Encoder::new(Some(ch).into_iter()));
                                                 }
                                             }
                                         }
                                     }
                                 },
-                                'n' => s.push('\n'),
-                                'r' => s.push('\r'),
-                                't' => s.push('\t'),
-                                'b' => s.push('\x08'),
-                                'f' => s.push('\x0C'),
-                                'v' => s.push('\x0B'),
+                                'n' => s.push('\n' as u16),
+                                'r' => s.push('\r' as u16),
+                                't' => s.push('\t' as u16),
+                                'b' => s.push('\x08' as u16),
+                                'f' => s.push('\x0C' as u16),
+                                'v' => s.push('\x0B' as u16),
                                 _ => match octal_digit(ch) {
                                     Some(mut code) => {
                                         // \0 is not octal escape sequence
@@ -890,12 +922,9 @@ impl<'a> Ctx<'a> {
                                                 }
                                             }
                                         }
-                                        match char::from_u32(code as u32) {
-                                            Some(ch) => s.push(ch),
-                                            None => return Err(Error::InvalidUnicode)
-                                        }
+                                        s.push(code as u16);
                                     },
-                                    None => s.push(ch)
+                                    None => s.extend(Utf16Encoder::new(Some(ch).into_iter()))
                                 }
                             }
                         } else {
@@ -914,13 +943,47 @@ impl<'a> Ctx<'a> {
             } else if is_line_terminator(ch) {
                 return Err(Error::UnexpectedToken);
             } else {
-                s.push(ch);
+                s.extend(Utf16Encoder::new(Some(ch).into_iter()))
             }
         }
         if self.rest.len() == 0 { return Err(Error::UnexpectedToken) }
-        let s = &**self.root.arena.alloc(s);
         Ok(Token {
-            ty: if octal { T::OctalLiteral(s) } else { T::StringLiteral(s) },
+            ty: if octal { T::OctalStringLiteral(s) } else { T::EscapedStringLiteral(s) },
+            line_number: self.start_line_number,
+            line_start: self.start_line_start,
+            start: start,
+            end: self.index
+        })
+    }
+
+    fn scan_string_literal(&mut self, quote: char) -> PRes<'a, Token<'a>>
+    {
+        let start = self.index - 1;
+
+        loop {
+            match self.rest.slice_shift_char() {
+                Some((ch, rest)) => {
+                    if ch == quote {
+                        self.index += 1;
+                        self.rest = rest;
+                        break
+                    }
+                    else if ch == '\\' {
+                        let s = self.root.string_arena
+                            .alloc(Utf16Encoder::new(self.source[start + 1..self.index].chars())
+                                   .collect());
+                        return self.scan_escaped_string_literal(quote, start, s);
+                    } else {
+                        self.index += 1;
+                        self.rest = rest;
+                        if is_line_terminator(ch) { return Err(Error::UnexpectedToken); }
+                    }
+                },
+                None => { return Err(Error::UnexpectedEOF) }
+            }
+        }
+        Ok(Token {
+            ty: T::StringLiteral(&self.source[start + 1..self.index - 1]),
             line_number: self.start_line_number,
             line_start: self.start_line_start,
             start: start,
@@ -1071,7 +1134,7 @@ impl<'a> Ctx<'a> {
                 start: self.index,
                 end: self.index,
             }),
-            Some((ch, _)) if is_identifier_start(ch) => self.scan_identifier(),
+            Some((ch, _)) if is_identifier_start(ch as u32) => self.scan_identifier(),
             Some(('(', _)) | Some((')', _)) | Some((';', _)) => self.scan_punctuator(),
             Some((ch @ '\'', rest)) | Some((ch @ '"', rest)) => {
                 self.index += 1;
@@ -1175,20 +1238,34 @@ impl<'a> Ctx<'a> {
         where Ann: Annotation<Ctx=Self>
     {
         let node = self.start::<Ann>();
-        if let Some(Token { ty, .. }) = self.lookahead {
-            let exp = match ty {
+        if let Some(token) = self.lookahead {
+            let exp = match token.ty {
                 T::Identifier(v) => { try!(self.lex()); E::Identifier(v) },
                 T::StringLiteral(s) => { try!(self.lex()); E::String(s) },
-                T::NumericLiteral(n) => { try!(self.lex()); E::Number(n) },
-                T::OctalLiteral(o) => {
-                    //if self.strict { tolerate_unexpected_token(lookahead, StrictOctal); }
+                T::EscapedStringLiteral(s) => { try!(self.lex()); E::EscapedString(s) },
+                T::OctalStringLiteral(o) => {
+                    if self.strict {
+                        // tolerate
+                        return Err(Error::StrictOctalLiteral(token))
+                    }
                     try!(self.lex());
-                    E::String(o)
+                    E::EscapedString(o)
+                },
+                T::NumericLiteral(n) => { try!(self.lex()); E::Number(n) },
+                T::OctalIntegerLiteral(n) => {
+                    if self.strict {
+                        // tolerate
+                        return Err(Error::StrictOctalLiteral(token))
+                    }
+                    try!(self.lex());
+                    E::Number(n)
                 },
                 T::Function => {
                     let (name, function) = try!(self.parse_function_expression());
                     E::Function(name, function)
                 },
+                T::BooleanLiteral(b) => { try!(self.lex()); E::Bool(b) },
+                T::NullLiteral => { try!(self.lex()); E::Null },
                 _ => {
                     return Err(Error::UnexpectedToken)
                 }
@@ -1263,10 +1340,15 @@ impl<'a> Ctx<'a> {
         try!(self.lex());
         match token {
             Some(Token { ty: T::Identifier(i), .. }) => Ok(finish(node, self, i)),
-            _ => {
-                // if self.strict && tmatch!(token, ) ...
-                Err(Error::UnexpectedToken)
-            }
+            Some(token) => {
+                if self.strict && is_strict_mode_reserved(&token.ty) {
+                    // tolerate
+                    Err(Error::StrictReservedWord(token))
+                } else {
+                    Err(Error::UnexpectedToken)
+                }
+            },
+            None => Err(Error::UnexpectedEOF)
         }
     }
 
@@ -1301,31 +1383,33 @@ impl<'a> Ctx<'a> {
         where Ann: Annotation<Ctx=Self>
     {
         let mut body = Vec::new();
+        let mut first_restricted = None;
         let node = self.start::<Ann>();
 
         expect!(self, T::LBrack);
 
-        while let Some(Token { ty: T::StringLiteral(_), .. }) = self.lookahead {
-             let statement = try!(self.parse_statement_list_item());
-             let first_restricted = false;
-             if let A(_, SLI::Statement(A(_, Statement::Expression(A(_,E::String(directive)))))) = statement {
-                match directive {
-                    "use strict" => {
-                        self.strict = true;
-                        if first_restricted
-                            { /*tolerate_unexpected_token(first_restricted, StrictOctalLiteral)*/ }
-                    },
-                    _ => {
-                        /*if !first_restricted {
-                            if let OctalLiteral(_) = token {
-                                first_restricted = token;
-                            }
-                        }*/
+        while let Some(token) = self.lookahead {
+            let statement = try!(self.parse_statement_list_item());
+            match statement {
+                A(_, SLI::Statement(A(_, Statement::Expression(A(_, E::String(_)))))) |
+                A(_, SLI::Statement(A(_, Statement::Expression(A(_, E::EscapedString(_)))))) => {
+                    match token.ty {
+                        T::StringLiteral("use strict") => {
+                            self.strict = true;
+                            // tolerate
+                            if let Some(e) = first_restricted { return Err(e) }
+                        },
+                        T::OctalStringLiteral(_) if first_restricted.is_none() => {
+                            first_restricted = Some(Error::StrictOctalLiteral(token));
+                        },
+                        _ => body.push(statement)
                     }
+                },
+                _ => {
+                    // this is not a directive
+                    body.push(statement);
+                    break
                 }
-            } else {
-                body.push(statement);
-                break
             }
         }
 
@@ -1441,35 +1525,36 @@ impl<'a> Ctx<'a> {
         where Ann: Annotation<Ctx=Self>
     {
         let mut body = Vec::new();
-        let first_restricted = false;
+        let mut first_restricted = None;
 
-        while let tk!(T::StringLiteral(_)) = self.lookahead {
-             let statement = try!(self.parse_statement_list_item());
-             if let A(_, SLI::Statement(A(_, Statement::Expression(A(_,E::String(directive)))))) = statement {
-                match directive {
-                    "use strict" => {
-                        self.strict = true;
-                        if first_restricted
-                            { /*tolerate_unexpected_token(first_restricted, StrictOctalLiteral)*/ }
-                    },
-                    _ => {
-                        /*if !first_restricted {
-                            if let OctalLiteral(_) = token {
-                                first_restricted = token;
-                            }
-                        }*/
+        while let Some(token) = self.lookahead {
+            let statement = try!(self.parse_statement_list_item());
+            match statement {
+                A(_, SLI::Statement(A(_, Statement::Expression(A(_, E::String(_)))))) |
+                A(_, SLI::Statement(A(_, Statement::Expression(A(_, E::EscapedString(_)))))) => {
+                    match token.ty {
+                        T::StringLiteral("use strict") => {
+                            self.strict = true;
+                            // tolerate
+                            if let Some(e) = first_restricted { return Err(e) }
+                        },
+                        T::OctalStringLiteral(_) if first_restricted.is_none() => {
+                            first_restricted = Some(Error::StrictOctalLiteral(token));
+                        },
+                        _ => {}
                     }
+                },
+                _ => {
+                    // this is not a directive
+                    body.push(statement);
+                    break
                 }
-            } else {
-                body.push(statement);
-                break
             }
             body.push(statement);
         }
 
         while let Some(_) = self.lookahead {
-            let statement = try!(self.parse_statement_list_item());
-            body.push(statement);
+            body.push(try!(self.parse_statement_list_item()));
         }
 
         Ok(body)
