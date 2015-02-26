@@ -54,10 +54,22 @@ pub struct Function<'a, Annotation> {
     pub body: BlockNode<'a, Annotation>,
 }
 
+pub type PropertyNode<'a, Annotation> = Annotated<Annotation, Property<'a, Annotation>>;
 #[derive(Debug)]
 pub enum Property<'a, Annotation> {
-    //Computed(ExpressionNode<'a, Annotation>),
-    Literal(IdentifierNode<'a, Annotation>),
+    Computed(ExpressionNode<'a, Annotation>),
+    Identifier(&'a str),
+    String(&'a str),
+    Numeric(f64),
+    EscapedString(&'a [u16]),
+}
+
+pub type PropertyDefinitionNode<'a, Annotation> =
+    Annotated<Annotation, PropertyDefinition<'a, Annotation>>;
+#[derive(Debug)]
+pub enum PropertyDefinition<'a, Annotation> {
+    //Identifier(Identifier<'a>),
+    Property(PropertyNode<'a, Annotation>, ExpressionNode<'a, Annotation>),
 }
 
 pub type ExpressionNode<'a, Annotation> = Annotated<Annotation, Expression<'a, Annotation>>;
@@ -71,10 +83,11 @@ pub enum Expression<'a, Annotation> {
     EscapedString(&'a [u16]),
     Number(f64),
     Function(Option<IdentifierNode<'a, Annotation>>, Function<'a, Annotation>),
-    Member(Box<ExpressionNode<'a, Annotation>>, Box<Property<'a, Annotation>>),
+    Member(Box<ExpressionNode<'a, Annotation>>, Box<PropertyNode<'a, Annotation>>),
     Assignment(Box<ExpressionNode<'a, Annotation>>, AssignOp, Box<ExpressionNode<'a, Annotation>>),
     Call(Box<ExpressionNode<'a, Annotation>>, Vec<ExpressionNode<'a, Annotation>>),
     Array(Vec<Option<ExpressionNode<'a, Annotation>>>),
+    Object(Vec<PropertyDefinitionNode<'a, Annotation>>),
 }
 
 pub type BlockNode<'a, Annotation> = Annotated<Annotation, Block<'a, Annotation>>;

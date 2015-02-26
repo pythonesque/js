@@ -5,14 +5,17 @@ extern crate unicode;
 
 use arena::TypedArena;
 
-use ast::{Annotation, AssignOp, BindingElement, Block, finish, Identifier, Property, Statement};
+use ast::{Annotation, AssignOp, BindingElement, Block, finish, Identifier,
+          Property, PropertyDefinition, Statement};
 use ast::Annotated as A;
 use ast::BlockNode as BN;
 use ast::BindingElementNode as BEN;
 use ast::Expression as E;
 use ast::ExpressionNode as EN;
-use ast::IdentifierNode as IN;
 use ast::Function as F;
+use ast::IdentifierNode as IN;
+use ast::PropertyDefinitionNode as PDN;
+use ast::PropertyNode as PN;
 use ast::ScriptNode as ScriptN;
 use ast::StatementListItem as SLI;
 use ast::StatementListItemNode as SLIN;
@@ -792,7 +795,10 @@ impl<'a> Ctx<'a> {
         })
     }
 
-    fn scan_octal_literal(&mut self, prefix: char, rest: &'a str, start: Pos) -> PRes<'a, Token<'a>> {
+    fn scan_octal_literal<Tag>(&mut self, prefix: char, rest: &'a str, start: Pos,
+                          tag: Tag) -> PRes<'a, Token<'a>>
+        where Tag: FnOnce(f64) -> T<'a>,
+    {
         let octal = match octal_digit(prefix) { Some(_) => true, _ => false };
         let begin = if octal { self.index } else { self.index + 1 };
 
@@ -810,7 +816,7 @@ impl<'a> Ctx<'a> {
             if is_identifier_start(ch as u32) || is_decimal_digit(ch) { return Err(Error::UnexpectedChar(ch)) }
         }
         Ok(Token {
-            ty: T::OctalIntegerLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 8))),
+            ty: tag(try!(num::from_str_radix(&self.source[begin..self.index], 8))),
             line_number: self.line_number,
             line_start: self.line_start,
             start: start,
@@ -846,11 +852,11 @@ impl<'a> Ctx<'a> {
                         return self.scan_binary_literal(start);
                     },
                     Some((ch @ 'o', rest)) | Some((ch @ 'O', rest)) => {
-                        return self.scan_octal_literal(ch, rest, start);
+                        return self.scan_octal_literal(ch, rest, start, T::NumericLiteral);
                     },
                     Some((ch, rest)) => if let Some(_) = octal_digit(ch) {
                         if self.is_implicit_octal_literal() {
-                            return self.scan_octal_literal(ch, rest, start);
+                            return self.scan_octal_literal(ch, rest, start, T::OctalIntegerLiteral);
                         }
                     },
                     _ => {}
@@ -1340,6 +1346,97 @@ impl<'a> Ctx<'a> {
         Ok(finish(&node, self, E::Array(elements)))
     }
 
+    // 11.1.5 Object Initialiser
+
+    fn parse_object_property_key<Ann>(&mut self) -> PRes<'a, PN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let node = self.start::<Ann>();
+
+        let token = self.lookahead;
+        try!(self.lex());
+
+        let property = match token {
+            Some(tok @ Token { ty: T::OctalStringLiteral(_), .. }) |
+            Some(tok @ Token { ty: T::OctalIntegerLiteral(_), .. }) if self.strict => {
+                // tolerate
+                return Err(Error::StrictOctalLiteral(tok));
+            },
+            tk!(T::StringLiteral(s)) => Property::String(s),
+            tk!(T::EscapedStringLiteral(l)) => Property::EscapedString(l),
+            tk!(T::OctalStringLiteral(l)) => Property::EscapedString(l),
+            tk!(T::NumericLiteral(n)) => Property::Numeric(n),
+            tk!(T::OctalIntegerLiteral(n)) => Property::Numeric(n),
+            tk!(T::LBrace) => {
+                let expr = try!(self.parse_assignment_expression());
+                expect!(self, T::RBrace);
+                Property::Computed(expr)
+            },
+            Some(token) => match identifier_name(&token) {
+                Some(name) => Property::Identifier(name),
+                None => return Err(Error::UnexpectedToken(token))
+            },
+            None => return Err(Error::UnexpectedEOF),
+        };
+
+        Ok(finish(&node, self, property))
+    }
+
+
+    fn parse_object_property<Ann>(&mut self, /*has_proto*/_: &mut bool) -> PRes<'a, PDN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        //let token = self.lookahead;
+        let node = self.start::<Ann>();
+
+        let key = try!(self.parse_object_property_key());
+        /*let maybe_method = try!(self.try_parse_method_definition(token, key, computed, node));
+
+        if let Some(property) = maybe_method {
+            try!(self.check_proto(maybe_method.key, maybe_method.computed, has_proto));
+            // finished
+            return Ok(maybe_method)
+        }
+
+        // init property or short hand property
+        try!(self.check_proto(key, computed, has_proto));*/
+
+        if let tk!(T::Colon) = self.lookahead {
+            try!(self.lex());
+            let value = try!(self.parse_assignment_expression());
+            return Ok(finish(&node, self, PropertyDefinition::Property(key, value)));
+        }
+
+        Err(self.unexpected_token(self.lookahead))
+    }
+
+    fn parse_object_initializer<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let mut properties = Vec::new();
+        let mut has_proto = false;
+        let node = self.start::<Ann>();
+
+        expect!(self, T::LBrack);
+
+        loop {
+            match self.lookahead {
+                tk!(T::RBrack) => break,
+                _ => {
+                    properties.push(try!(self.parse_object_property(&mut has_proto)));
+
+                    if !tmatch!(self.lookahead, T::RBrack) {
+                        try!(self.expect_comma_separator())
+                    }
+                }
+            }
+        }
+
+        expect!(self, T::RBrack);
+
+        Ok(finish(&node, self, E::Object(properties)))
+    }
+
     // 11.1.6 The Grouping Operator
     fn parse_group_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
@@ -1365,7 +1462,7 @@ impl<'a> Ctx<'a> {
             let exp = match token.ty {
                 T::LParen => return self.parse_group_expression(),
                 T::LBrace => return self.parse_array_initializer(),
-                //T::LBrack
+                T::LBrack => return self.parse_object_initializer(),
                 T::This => { try!(self.lex()); E::This },
                 T::Identifier(v) => { try!(self.lex()); E::Identifier(v) },
                 T::StringLiteral(s) => { try!(self.lex()); E::String(s) },
@@ -1427,7 +1524,7 @@ impl<'a> Ctx<'a> {
         Ok(args)
     }
 
-    fn parse_non_computed_property<Ann>(&mut self) -> PRes<'a, Property<'a, Ann>>
+    fn parse_non_computed_property<Ann>(&mut self) -> PRes<'a, PN<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
     {
         let node = self.start::<Ann>();
@@ -1436,12 +1533,12 @@ impl<'a> Ctx<'a> {
         try!(self.lex());
 
         match token.as_ref().and_then(identifier_name) {
-            Some(name) => Ok(Property::Literal(finish(&node, self, name))),
+            Some(name) => Ok(finish(&node, self, Property::Identifier(name))),
             None => Err(self.unexpected_token(token))
         }
     }
 
-    fn parse_non_computed_member<Ann>(&mut self) -> PRes<'a, Property<'a, Ann>>
+    fn parse_non_computed_member<Ann>(&mut self) -> PRes<'a, PN<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
     {
         expect!(self, T::Dot);
