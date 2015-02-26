@@ -1546,6 +1546,20 @@ impl<'a> Ctx<'a> {
         self.parse_non_computed_property()
     }
 
+    fn parse_computed_member<Ann>(&mut self) -> PRes<'a, PN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        expect!(self, T::LBrace);
+
+        let node = self.start::<Ann>();
+        let expr = try!(self.parse_expression());
+        let node = finish(&node, self, Property::Computed(expr));
+
+        expect!(self, T::RBrace);
+
+        Ok(node)
+    }
+
     fn parse_left_hand_side_expression_allow_call<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
     {
@@ -1569,7 +1583,10 @@ impl<'a> Ctx<'a> {
                         let args = try!(self.parse_arguments());
                         E::Call(Box::new(expr), args)
                     },
-                    // tk!(T::LBrace) => ,
+                    tk!(T::LBrace) => {
+                        let property = try!(self.parse_computed_member());
+                        E::Member(Box::new(expr), Box::new(property))
+                    }
                     _ => { break }
                 };
                 finish(&node, self, expr)
