@@ -1245,6 +1245,7 @@ impl<'a> Ctx<'a> {
         let node = self.start::<Ann>();
         if let Some(token) = self.lookahead {
             let exp = match token.ty {
+                T::This => { try!(self.lex()); E::This },
                 T::Identifier(v) => { try!(self.lex()); E::Identifier(v) },
                 T::StringLiteral(s) => { try!(self.lex()); E::String(s) },
                 T::EscapedStringLiteral(s) => { try!(self.lex()); E::EscapedString(s) },

@@ -57,6 +57,7 @@ pub struct Function<'a, Annotation> {
 pub type ExpressionNode<'a, Annotation> = Annotated<Annotation, Expression<'a, Annotation>>;
 #[derive(Debug)]
 pub enum Expression<'a, Annotation> {
+    This,
     Identifier(&'a str),
     String(&'a str),
     Bool(bool),
