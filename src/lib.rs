@@ -147,6 +147,7 @@ pub enum Error<'a> {
     StrictVarName,
     StrictLHSAssignment(Token<'a>),
     InvalidLHSInArgument,
+    IllegalReturn,
 }
 
 impl<'a> FromError<ParseFloatError> for Error<'a> {
@@ -1788,6 +1789,36 @@ impl<'a> Ctx<'a> {
         Ok(finish(node, self, Statement::Expression(expr)))
     }*/
 
+    // 12.9. The return statement
+
+    fn parse_return_statement<Ann>(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let mut argument = None;
+
+        expect!(self, T::Return);
+
+        if !self.state.in_function_body {
+            // tolerate
+            return Err(Error::IllegalReturn)
+        }
+
+        // 'return' followed by a space and an identifier is very common...
+
+        if self.has_line_terminator {
+            // HACK
+            return Ok(finish(&node, self, Statement::Return(None)));
+        }
+
+        if !tmatch!(self.lookahead, T::Semi, T::RBrace) && self.lookahead.is_some() {
+            argument = Some(try!(self.parse_expression()));
+        }
+
+        try!(self.consume_semicolon());
+
+        return Ok(finish(&node, self, Statement::Return(argument)));
+    }
+
     fn parse_statement<Ann>(&mut self) -> PRes<'a, SN<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
     {
@@ -1799,6 +1830,7 @@ impl<'a> Ctx<'a> {
             },
             tk!(T::Semi) => self.parse_empty_statement(node),
             //tk!(T::LParen) => return self.parse_expression_statement(node),
+            tk!(T::Return) => self.parse_return_statement(node),
             tk!(T::Var) => self.parse_variable_statement(node),
             //Some(_) => {
             _ => {
@@ -1822,6 +1854,9 @@ impl<'a> Ctx<'a> {
         expect!(self, T::LBrack);
 
         while let Some(token) = self.lookahead {
+            if !tmatch!(self.lookahead, T::StringLiteral(_), T::EscapedStringLiteral(_), T::OctalStringLiteral(_)) {
+                break;
+            }
             let statement = try!(self.parse_statement_list_item());
             match statement {
                 A(_, SLI::Statement(A(_, Statement::Expression(A(_, E::String(_)))))) |

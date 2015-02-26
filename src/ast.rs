@@ -100,6 +100,7 @@ pub enum Statement<'a, Annotation> {
     Block(Block<'a, Annotation>),
     Variable(Vec<BindingElementNode<'a, Annotation>>),
     Expression(ExpressionNode<'a, Annotation>),
+    Return(Option<ExpressionNode<'a, Annotation>>),
 }
 
 pub type StatementListItemNode<'a, Annotation> = Annotated<Annotation, StatementListItem<'a, Annotation>>;
