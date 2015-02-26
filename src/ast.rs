@@ -72,6 +72,7 @@ pub enum Expression<'a, Annotation> {
     Number(f64),
     Function(Option<IdentifierNode<'a, Annotation>>, Function<'a, Annotation>),
     Member(Box<ExpressionNode<'a, Annotation>>, Box<Property<'a, Annotation>>),
+    Assignment(Box<ExpressionNode<'a, Annotation>>, AssignOp, Box<ExpressionNode<'a, Annotation>>),
 }
 
 pub type BlockNode<'a, Annotation> = Annotated<Annotation, Block<'a, Annotation>>;
@@ -95,6 +96,14 @@ pub enum StatementListItem<'a, Annotation> {
 
 pub type ScriptNode<'a, Annotation> = Annotated<Annotation, Script<'a, Annotation>>;
 pub type Script<'a, Annotation> = Vec<StatementListItemNode<'a, Annotation>>;
+
+#[derive(Copy, Debug)]
+pub enum AssignOp {
+    Eq,
+    TimesEq, DivEq, ModEq, PlusEq, MinusEq,
+    LtLtEq, GtGtEq, GtGtGtEq,
+    AndEq, XorEq, OrEq,
+}
 
 #[derive(Copy, Debug)]
 pub enum Tok<'a> {

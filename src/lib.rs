@@ -5,7 +5,7 @@ extern crate unicode;
 
 use arena::TypedArena;
 
-use ast::{Annotation, BindingElement, Block, finish, Identifier, Property, Statement};
+use ast::{Annotation, AssignOp, BindingElement, Block, finish, Identifier, Property, Statement};
 use ast::Annotated as A;
 use ast::BlockNode as BN;
 use ast::BindingElementNode as BEN;
@@ -142,6 +142,8 @@ pub enum Error<'a> {
     StrictParamName(Token<'a>),
     StrictParamDupe(Token<'a>),
     StrictVarName,
+    StrictLHSAssignment(Token<'a>),
+    InvalidLHSInArgument,
 }
 
 impl<'a> FromError<ParseFloatError> for Error<'a> {
@@ -300,6 +302,19 @@ fn keyword<'a>(id: &str, strict: bool) -> Option<T<'a>> {
         "protected" if strict => Protected,
         "public" if strict => Public,
         "static" if strict => Static,
+        _ => return None
+    })
+}
+
+fn assign_op<'a>(tok: &Token<'a>) -> Option<AssignOp> {
+    use ast::AssignOp::*;
+
+    Some(match tok.ty {
+        T::Eq => Eq,
+        T::TimesEq => TimesEq, T::DivEq => DivEq, T::ModEq => ModEq, T::PlusEq => PlusEq,
+        T::MinusEq => MinusEq, T::LtLtEq => LtLtEq, T::GtGtEq => GtGtEq, T::GtGtGtEq => GtGtGtEq,
+        T::AndEq => AndEq, T::XorEq => XorEq, T::OrEq => OrEq,
+
         _ => return None
     })
 }
@@ -1440,9 +1455,36 @@ impl<'a> Ctx<'a> {
     fn parse_assignment_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
     {
-        let expr = self.parse_conditional_expression();
+        let node = self.start::<Ann>();
+        let token = match self.lookahead {
+            Some(token) => token,
+            None => return Err(Error::UnexpectedEOF)
+        };
 
-        expr
+        let expr = try!(self.parse_conditional_expression());
+
+        // Arrow
+
+        match self.lookahead.as_ref().and_then(assign_op) {
+            Some(op) => {
+                match expr {
+                    A(_, E::Identifier(i)) if self.strict && is_restricted_word(&i) => {
+                        // tolerate
+                        Err(Error::StrictLHSAssignment(token))
+                    },
+                    A(_, E::Identifier(_)) | A(_, E::Member(_, _)) => {
+                        try!(self.lex());
+                        let right = try!(self.parse_assignment_expression());
+                        Ok(finish(&node, self, E::Assignment(Box::new(expr), op, Box::new(right))))
+                    },
+                    _ => {
+                        // tolerate
+                        Err(Error::InvalidLHSInArgument)
+                    }
+                }
+            },
+            None => Ok(expr)
+        }
     }
 
     fn parse_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
