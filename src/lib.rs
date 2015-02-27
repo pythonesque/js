@@ -33,7 +33,7 @@ use unicode::str::Utf16Encoder;
 
 pub mod ast;
 
-pub type Pos = u16;
+pub type Pos = u32;
 
 macro_rules! tk {
     ($pat:pat) => (Some(Token { ty: $pat , .. }))
@@ -58,7 +58,7 @@ macro_rules! tmatch {
 }
 
 #[derive(Clone, Default)]
-pub struct State<'a> {
+struct State<'a> {
     allow_in: bool,
     label_set: HashSet<&'a str>,
     parenthesis_count: Pos,
@@ -399,7 +399,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
     where Ann: Annotation<Ctx=Self, Start=Start>
 {
     #[cold] #[inline(never)]
-    pub fn unexpected_char(&self, opt: Option<(char, &str)>) -> Error<'a> {
+    fn unexpected_char(&self, opt: Option<(char, &str)>) -> Error<'a> {
         match opt {
             Some((ch, _)) => Error::UnexpectedChar(ch),
             None => Error::UnexpectedEOF,
@@ -1381,7 +1381,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
 struct Params<'a, Ann> {
     params: Vec<IN<'a, Ann>>,
-    pub defaults: Vec<BEN<'a, Ann>>,
+    defaults: Vec<BEN<'a, Ann>>,
     rest: Option<IN<'a, Ann>>,
     stricted: Option<Error<'a>>,
     first_restricted: Option<Error<'a>>,
@@ -1391,7 +1391,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
     where Ann: Annotation<Ctx=Self, Start=Start>
 {
     #[cold] #[inline(never)]
-    pub fn unexpected_token(&self, opt: Option<Token<'a>>) -> Error<'a> {
+    fn unexpected_token(&self, opt: Option<Token<'a>>) -> Error<'a> {
         match opt {
             Some(tok) => Error::UnexpectedToken(tok),
             None => Error::UnexpectedEOF,
@@ -1676,7 +1676,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 let expr = match self.lookahead {
                     tk!(T::Dot) => {
                         let property = try!(self.parse_non_computed_member());
-                        E::Member(Box::new(expr), Box::new(property))
+                        E::Member(Box::new((expr, property)))
                     },
                     tk!(T::LParen) => {
                         let args = try!(self.parse_arguments());
@@ -1684,7 +1684,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     },
                     tk!(T::LBrace) => {
                         let property = try!(self.parse_computed_member());
-                        E::Member(Box::new(expr), Box::new(property))
+                        E::Member(Box::new((expr, property)))
                     }
                     _ => { break }
                 };
@@ -1709,7 +1709,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 let expr = match self.lookahead {
                     tk!(T::LBrace) => {
                         let property = try!(self.parse_computed_member());
-                        E::Member(Box::new(expr), Box::new(property))
+                        E::Member(Box::new((expr, property)))
                     },
                     tk!(T::LParen) => {
                         let args = try!(self.parse_arguments());
@@ -1764,15 +1764,15 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                         if self.binop_stack.len() <= bot_index {
                             // Stack bottom
                             self.binop_stack.push((op__, prec__, left_, left_marker_));
-                            bot = finish(&bot_marker, self, E::Binary(Box::new(bot), op_, Box::new(right_)));
+                            bot = finish(&bot_marker, self, E::Binary(op_, Box::new((bot, right_))));
                         } else {
-                            let expr = finish(&left_marker_, self, E::Binary(Box::new(left_), op_, Box::new(right_)));
+                            let expr = finish(&left_marker_, self, E::Binary(op_, Box::new((left_, right_))));
                             self.binop_stack.push((op__, prec__, expr, left_marker_));
                         }
                     },
                     None => {
                         // Stack bottom
-                        bot = finish(&bot_marker, self, E::Binary(Box::new(bot), op_, Box::new(right_)));
+                        bot = finish(&bot_marker, self, E::Binary(op_, Box::new((bot, right_))));
                     }
                 }
             }
@@ -1793,11 +1793,11 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                         self.binop_stack.push((op_, prec_, expr_, marker_));
                         break
                     }
-                    expr = finish(&marker_, self, E::Binary(Box::new(expr_), op, Box::new(expr)));
+                    expr = finish(&marker_, self, E::Binary(op, Box::new((expr_, expr))));
                     op = op_;
                 }
                 // Stack bottom
-                finish(&bot_marker, self, E::Binary(Box::new(bot), op, Box::new(expr)))
+                finish(&bot_marker, self, E::Binary(op, Box::new((bot, expr))))
             } else { bot }
         } else { bot })
     }
@@ -1830,10 +1830,28 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         expr
     }
 
-    fn parse_conditional_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
-        let expr = self.parse_binary_expression();
+    // 11.12 Conditional Operator
 
-        expr
+    fn parse_conditional_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
+        let node = self.start();
+
+        let expr = try!(self.parse_binary_expression());
+        // if arrows ...
+        Ok(match self.lookahead {
+            tk!(T::QMark) => {
+                try!(self.lex());
+                let previous_allow_in = self.state.allow_in;
+                self.state.allow_in = true;
+                let consequent = try!(self.parse_assignment_expression());
+                // NOTE: Should we make sure this runs on error (above)?
+                self.state.allow_in = previous_allow_in;
+                expect!(self, T::Colon);
+                let alternate = try!(self.parse_assignment_expression());
+
+                finish(&node, self, E::Conditional(Box::new((expr, consequent, alternate))))
+            },
+            _ => expr
+        })
     }
 
     fn parse_assignment_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
@@ -1854,10 +1872,10 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                         // tolerate
                         Err(Error::StrictLHSAssignment(token))
                     },
-                    A(_, E::Identifier(_)) | A(_, E::Member(_, _)) => {
+                    A(_, E::Identifier(_)) | A(_, E::Member(_)) => {
                         try!(self.lex());
                         let right = try!(self.parse_assignment_expression());
-                        Ok(finish(&node, self, E::Assignment(Box::new(expr), op, Box::new(right))))
+                        Ok(finish(&node, self, E::Assignment(op, Box::new((expr, right)))))
                     },
                     _ => {
                         // tolerate

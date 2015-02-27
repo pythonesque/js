@@ -42,7 +42,9 @@ fn display<'a, O>(path: Option<Path>, data: Option<Data<'a>>, output: &mut O)
             // Note: if the file was encoded successfully, it shouldn't be possible for the result
             // to be None here.  But even if it were (because of an accidental panic, say), that
             // should have already killed the display thread.
-            writeln!(output, "{:?}", result.unwrap()/*.is_ok()*//*.err()*/)
+            let result = result.unwrap();
+            writeln!(output, "{:?}", result)
+            //writeln!(output, "{:?}", result.err())
         },
         None => {
             writeln!(output, "No parse result found: check the file's encoding.")

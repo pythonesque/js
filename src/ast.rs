@@ -83,13 +83,14 @@ pub enum Expression<'a, Ann> {
     EscapedString(&'a [u16]),
     Number(f64),
     Function(Option<IdentifierNode<'a, Ann>>, Function<'a, Ann>),
-    Member(Box<ExpressionNode<'a, Ann>>, Box<PropertyNode<'a, Ann>>),
-    Assignment(Box<ExpressionNode<'a, Ann>>, AssignOp, Box<ExpressionNode<'a, Ann>>),
+    Member(Box<(ExpressionNode<'a, Ann>, PropertyNode<'a, Ann>)>),
+    Assignment(AssignOp, Box<(ExpressionNode<'a, Ann>, ExpressionNode<'a, Ann>)>),
     Call(Box<ExpressionNode<'a, Ann>>, Vec<ExpressionNode<'a, Ann>>),
     Array(Vec<Option<ExpressionNode<'a, Ann>>>),
     Object(Vec<PropertyDefinitionNode<'a, Ann>>),
     New(Box<ExpressionNode<'a, Ann>>, Vec<ExpressionNode<'a, Ann>>),
-    Binary(Box<ExpressionNode<'a, Ann>>, BinOp, Box<ExpressionNode<'a, Ann>>),
+    Binary(BinOp, Box<(ExpressionNode<'a, Ann>, ExpressionNode<'a, Ann>)>),
+    Conditional(Box<(ExpressionNode<'a, Ann>, ExpressionNode<'a, Ann>, ExpressionNode<'a, Ann>)>),
 }
 
 pub type BlockNode<'a, Ann> = Annotated<Ann, Block<'a, Ann>>;
