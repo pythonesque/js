@@ -1561,6 +1561,21 @@ impl<'a> Ctx<'a> {
         Ok(node)
     }
 
+    fn parse_new_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let node = self.start::<Ann>();
+
+        expect!(self, T::New);
+        let callee = try!(self.parse_left_hand_side_expression());
+        let args = match self.lookahead {
+            tk!(T::LParen) => try!(self.parse_arguments()),
+            _ => Vec::new()
+        };
+
+        Ok(finish(&node, self, E::New(Box::new(callee), args)))
+    }
+
     fn parse_left_hand_side_expression_allow_call<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
     {
@@ -1569,7 +1584,7 @@ impl<'a> Ctx<'a> {
         let node = self.start::<Ann>();
         self.state.allow_in = true;
         let mut expr = try!(match self.lookahead {
-            //tk!(T::New) => self.parse_new_expression(),
+            tk!(T::New) => self.parse_new_expression(),
             _ => self.parse_primary_expression()
         });
 
@@ -1594,6 +1609,36 @@ impl<'a> Ctx<'a> {
             }
         }
         self.state.allow_in = previous_allow_in;
+
+        Ok(expr)
+    }
+
+    fn parse_left_hand_side_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
+        where Ann: Annotation<Ctx=Self>
+    {
+        let node = self.start::<Ann>();
+
+        let mut expr = try!(match self.lookahead {
+            tk!(T::New) => self.parse_new_expression(),
+            _ => self.parse_primary_expression()
+        });
+
+        loop {
+            expr = {
+                let expr = match self.lookahead {
+                    tk!(T::LBrace) => {
+                        let property = try!(self.parse_computed_member());
+                        E::Member(Box::new(expr), Box::new(property))
+                    },
+                    tk!(T::LParen) => {
+                        let args = try!(self.parse_arguments());
+                        E::Call(Box::new(expr), args)
+                    },
+                    _ => { break }
+                };
+                finish(&node, self, expr)
+            }
+        }
 
         Ok(expr)
     }

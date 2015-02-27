@@ -88,6 +88,7 @@ pub enum Expression<'a, Ann> {
     Call(Box<ExpressionNode<'a, Ann>>, Vec<ExpressionNode<'a, Ann>>),
     Array(Vec<Option<ExpressionNode<'a, Ann>>>),
     Object(Vec<PropertyDefinitionNode<'a, Ann>>),
+    New(Box<ExpressionNode<'a, Ann>>, Vec<ExpressionNode<'a, Ann>>),
 }
 
 pub type BlockNode<'a, Ann> = Annotated<Ann, Block<'a, Ann>>;
