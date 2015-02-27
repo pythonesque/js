@@ -6,6 +6,7 @@ extern crate js;
 use getopts::{optflag,getopts,OptGroup};
 use js::{Options, PRes, RootCtx};
 use js::ast::{ScriptNode};
+use std::cmp;
 use std::old_io::{self, Reader, Writer};
 use std::old_io::fs::File;
 use std::os;
@@ -75,7 +76,9 @@ pub fn main() {
     } else {
         let mut initial = matches.free.iter().map( |p| (Path::new(&*p), None::<Data>) ).collect::<Vec<_>>();
         {
-            initial.chunks_mut(matches.free.len() / os::num_cpus()).map( |chunk| thread::scoped( move || {
+            initial
+                .chunks_mut(cmp::max(matches.free.len() / os::num_cpus(), 1))
+                .map( |chunk| thread::scoped( move || {
                 for &mut (ref path, ref mut data) in chunk.iter_mut() {
                     let file = File::open(path).unwrap();
                     parse(options, file, data);
