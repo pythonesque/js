@@ -1,9 +1,9 @@
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 
-pub struct Annotated<Annotation, T>(pub Annotation, pub T);
+pub struct Annotated<Ann, T>(pub Ann, pub T);
 
-impl<Annotation, T> fmt::Debug for Annotated<Annotation, T> where T: fmt::Debug {
+impl<Ann, T> fmt::Debug for Annotated<Ann, T> where T: fmt::Debug {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.1.fmt(f)
     }
@@ -17,64 +17,64 @@ pub trait Annotation {
     fn finish(start: &Self::Start, ctx: &Self::Ctx) -> Self;
 }
 
-pub fn finish<Ann, T>(start: &<Ann as Annotation>::Start,
-                      ctx: &mut <Ann as Annotation>::Ctx,
-                      inner: T,
-                     ) -> Annotated<Ann, T>
+pub fn finish<'a, Ann, T>(start: &'a <Ann as Annotation>::Start,
+                          ctx: &'a mut <Ann as Annotation>::Ctx,
+                          inner: T,
+                         ) -> Annotated<Ann, T>
     where Ann: Annotation,
 {
     Annotated(Annotation::finish(start, ctx), inner)
 }
 
-impl<Annotation, T> Deref for Annotated<Annotation, T> {
+impl<Ann, T> Deref for Annotated<Ann, T> {
     type Target = T;
 
-    fn deref(&self) -> &T { &self.1 }
+    fn deref<'a>(&'a self) -> &'a T { &self.1 }
 }
 
 impl<Annotation, T> DerefMut for Annotated<Annotation, T> {
     fn deref_mut(&mut self) -> &mut T { &mut self.1 }
 }
 
-pub type IdentifierNode<'a, Annotation> = Annotated<Annotation, Identifier<'a>>;
+pub type IdentifierNode<'a, Ann> = Annotated<Ann, Identifier<'a>>;
 pub type Identifier<'a> = &'a str;
 
-pub type BindingElementNode<'a, Annotation> = Annotated<Annotation, BindingElement<'a, Annotation>>;
+pub type BindingElementNode<'a, Ann> = Annotated<Ann, BindingElement<'a, Ann>>;
 #[derive(Debug)]
-pub enum BindingElement<'a, Annotation> {
-    SingleName(IdentifierNode<'a, Annotation>, ExpressionNode<'a, Annotation>),
-    Uninitialized(IdentifierNode<'a, Annotation>),
+pub enum BindingElement<'a, Ann> {
+    SingleName(IdentifierNode<'a, Ann>, ExpressionNode<'a, Ann>),
+    Uninitialized(IdentifierNode<'a, Ann>),
 }
 
 #[derive(Debug)]
-pub struct Function<'a, Annotation> {
-    pub params: Vec<IdentifierNode<'a, Annotation>>,
-    pub defaults: Vec<BindingElementNode<'a, Annotation>>,
-    pub rest: Option<IdentifierNode<'a, Annotation>>,
-    pub body: BlockNode<'a, Annotation>,
+pub struct Function<'a, Ann> {
+    pub params: Vec<IdentifierNode<'a, Ann>>,
+    pub defaults: Vec<BindingElementNode<'a, Ann>>,
+    pub rest: Option<IdentifierNode<'a, Ann>>,
+    pub body: BlockNode<'a, Ann>,
 }
 
-pub type PropertyNode<'a, Annotation> = Annotated<Annotation, Property<'a, Annotation>>;
+pub type PropertyNode<'a, Ann> = Annotated<Ann, Property<'a, Ann>>;
 #[derive(Debug)]
-pub enum Property<'a, Annotation> {
-    Computed(ExpressionNode<'a, Annotation>),
+pub enum Property<'a, Ann> {
+    Computed(ExpressionNode<'a, Ann>),
     Identifier(&'a str),
     String(&'a str),
     Numeric(f64),
     EscapedString(&'a [u16]),
 }
 
-pub type PropertyDefinitionNode<'a, Annotation> =
-    Annotated<Annotation, PropertyDefinition<'a, Annotation>>;
+pub type PropertyDefinitionNode<'a, Ann> =
+    Annotated<Ann, PropertyDefinition<'a, Ann>>;
 #[derive(Debug)]
-pub enum PropertyDefinition<'a, Annotation> {
+pub enum PropertyDefinition<'a, Ann> {
     //Identifier(Identifier<'a>),
-    Property(PropertyNode<'a, Annotation>, ExpressionNode<'a, Annotation>),
+    Property(PropertyNode<'a, Ann>, ExpressionNode<'a, Ann>),
 }
 
-pub type ExpressionNode<'a, Annotation> = Annotated<Annotation, Expression<'a, Annotation>>;
+pub type ExpressionNode<'a, Ann> = Annotated<Ann, Expression<'a, Ann>>;
 #[derive(Debug)]
-pub enum Expression<'a, Annotation> {
+pub enum Expression<'a, Ann> {
     This,
     Identifier(&'a str),
     String(&'a str),
@@ -82,36 +82,36 @@ pub enum Expression<'a, Annotation> {
     Null,
     EscapedString(&'a [u16]),
     Number(f64),
-    Function(Option<IdentifierNode<'a, Annotation>>, Function<'a, Annotation>),
-    Member(Box<ExpressionNode<'a, Annotation>>, Box<PropertyNode<'a, Annotation>>),
-    Assignment(Box<ExpressionNode<'a, Annotation>>, AssignOp, Box<ExpressionNode<'a, Annotation>>),
-    Call(Box<ExpressionNode<'a, Annotation>>, Vec<ExpressionNode<'a, Annotation>>),
-    Array(Vec<Option<ExpressionNode<'a, Annotation>>>),
-    Object(Vec<PropertyDefinitionNode<'a, Annotation>>),
+    Function(Option<IdentifierNode<'a, Ann>>, Function<'a, Ann>),
+    Member(Box<ExpressionNode<'a, Ann>>, Box<PropertyNode<'a, Ann>>),
+    Assignment(Box<ExpressionNode<'a, Ann>>, AssignOp, Box<ExpressionNode<'a, Ann>>),
+    Call(Box<ExpressionNode<'a, Ann>>, Vec<ExpressionNode<'a, Ann>>),
+    Array(Vec<Option<ExpressionNode<'a, Ann>>>),
+    Object(Vec<PropertyDefinitionNode<'a, Ann>>),
 }
 
-pub type BlockNode<'a, Annotation> = Annotated<Annotation, Block<'a, Annotation>>;
-pub type Block<'a, Annotation> = Vec<StatementListItemNode<'a, Annotation>>;
+pub type BlockNode<'a, Ann> = Annotated<Ann, Block<'a, Ann>>;
+pub type Block<'a, Ann> = Vec<StatementListItemNode<'a, Ann>>;
 
-pub type StatementNode<'a, Annotation> = Annotated<Annotation, Statement<'a, Annotation>>;
+pub type StatementNode<'a, Ann> = Annotated<Ann, Statement<'a, Ann>>;
 #[derive(Debug)]
-pub enum Statement<'a, Annotation> {
+pub enum Statement<'a, Ann> {
     Empty,
-    Block(Block<'a, Annotation>),
-    Variable(Vec<BindingElementNode<'a, Annotation>>),
-    Expression(ExpressionNode<'a, Annotation>),
-    Return(Option<ExpressionNode<'a, Annotation>>),
+    Block(Block<'a, Ann>),
+    Variable(Vec<BindingElementNode<'a, Ann>>),
+    Expression(ExpressionNode<'a, Ann>),
+    Return(Option<ExpressionNode<'a, Ann>>),
 }
 
-pub type StatementListItemNode<'a, Annotation> = Annotated<Annotation, StatementListItem<'a, Annotation>>;
+pub type StatementListItemNode<'a, Ann> = Annotated<Ann, StatementListItem<'a, Ann>>;
 #[derive(Debug)]
-pub enum StatementListItem<'a, Annotation> {
-    Statement(StatementNode<'a, Annotation>),
-    Function(IdentifierNode<'a, Annotation>, Function<'a, Annotation>),
+pub enum StatementListItem<'a, Ann> {
+    Statement(StatementNode<'a, Ann>),
+    Function(IdentifierNode<'a, Ann>, Function<'a, Ann>),
 }
 
-pub type ScriptNode<'a, Annotation> = Annotated<Annotation, Script<'a, Annotation>>;
-pub type Script<'a, Annotation> = Vec<StatementListItemNode<'a, Annotation>>;
+pub type ScriptNode<'a, Ann> = Annotated<Ann, Script<'a, Ann>>;
+pub type Script<'a, Ann> = Vec<StatementListItemNode<'a, Ann>>;
 
 #[derive(Copy, Debug)]
 pub enum AssignOp {

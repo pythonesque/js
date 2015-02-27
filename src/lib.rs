@@ -31,7 +31,7 @@ use std::num::{self, ParseFloatError};
 
 use unicode::str::Utf16Encoder;
 
-mod ast;
+pub mod ast;
 
 pub type Pos = usize;
 
@@ -158,7 +158,7 @@ impl<'a> FromError<ParseFloatError> for Error<'a> {
 
 pub type PRes<'a, T> = Result<T, Error<'a>>;
 
-impl<'a> RootCtx {
+impl RootCtx {
     pub fn new() -> Self {
         RootCtx {
             string_arena: TypedArena::new(),
@@ -359,11 +359,11 @@ impl<'a> Annotation for () {
     type Ctx = Ctx<'a>;
     type Start = ();
 
-    fn start(_: &Ctx) -> () {
+    fn start(_: &Ctx<'a>) -> () {
         ()
     }
 
-    fn finish(_: &(), _: &Ctx) -> () {
+    fn finish(_: &(), _: &Ctx<'a>) -> () {
         ()
     }
 }
@@ -1238,7 +1238,7 @@ impl<'a> Ctx<'a> {
             Token { ty: T::EOF, .. } => None,
             tok => Some(/* extra.tokens*/tok)
         };
-        println!("{:?}", self.lookahead);
+        //println!("{:?}", self.lookahead);
 
         self.scanning = false;
 
@@ -1263,7 +1263,7 @@ impl<'a> Ctx<'a> {
             Token { ty: T::EOF, .. } => None,
             tok => Some(/* extra.tokens */tok)
         };
-        println!("{:?}", self.lookahead);
+        //println!("{:?}", self.lookahead);
 
         self.scanning = false;
 

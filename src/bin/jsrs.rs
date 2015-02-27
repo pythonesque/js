@@ -1,19 +1,45 @@
-#![feature(env, rustc_private, old_io, old_path)]
+#![feature(env, rustc_private, old_io, old_path, os)]
 
 extern crate getopts;
 extern crate js;
 
 use getopts::{optflag,getopts,OptGroup};
-use js::{Options, RootCtx};
+use js::{Options, PRes, RootCtx};
+use js::ast::{ScriptNode};
 use std::old_io::{self, Reader, Writer};
 use std::old_io::fs::File;
+use std::os;
+use std::thread;
 
-fn parse<I, O>(options: &Options, mut input: I,  output: &mut O)
-    where I: Reader, O: Writer {
+type Res<'a> = PRes<'a, ScriptNode<'a, ()>>;
+
+pub struct Data<'a>(RootCtx, String, Option<Res<'a>>);
+
+unsafe impl<'a> Send for Data<'a> {}
+
+fn parse<'a, I>(options: &Options, mut input: I, data: &'a mut Option<Data>) -> &'a Res<'a>
+    where I: Reader + 'a
+{
     let string = input.read_to_string().unwrap();
     drop(input);
-    let ref ctx = RootCtx::new();
-    (writeln!(output, "{:?}", js::parse::<()>(ctx, &string, options))).unwrap();
+    let ctx = RootCtx::new();
+    *data = Some(Data(ctx, string, None));
+    let Data(ref ctx, ref string, ref mut res) = *data.as_mut().unwrap();
+    *res = Some(js::parse::<()>(ctx, string, options));
+    res.as_ref().unwrap()
+}
+
+fn display<'a, O>(path: Option<Path>, data: Option<Data<'a>>, output: &mut O)
+    where O: Writer
+{
+    let Data(_, _, result) = data.unwrap();
+    let result = result.unwrap();
+    /*(writeln!(output, "{:?}", result)).unwrap();*/
+    match path {
+        Some(path) => write!(output, "{}: ", path.display()),
+        None => write!(output, "<stdin>: ", )
+    }.unwrap();
+    writeln!(output, "{:?}", result/*.is_ok()*//*.err()*/).unwrap();
 }
 
 fn print_usage(program: &str, _opts: &[OptGroup]) {
@@ -42,11 +68,22 @@ pub fn main() {
         return;
     }
     if matches.free.is_empty() {
-        parse(options, old_io::stdin(), output)
+        let mut data = None;
+        let stdin = old_io::stdin();
+        parse(options, stdin, &mut data);
+        display(None, data, output);
     } else {
-        for path in matches.free.iter().map ( |p| Path::new(&*p) ) {
-            let file = File::open(&path).unwrap();
-            parse(options, file, output);
+        let mut initial = matches.free.iter().map( |p| (Path::new(&*p), None::<Data>) ).collect::<Vec<_>>();
+        {
+            initial.chunks_mut(matches.free.len() / os::num_cpus()).map( |chunk| thread::scoped( move || {
+                for &mut (ref path, ref mut data) in chunk.iter_mut() {
+                    let file = File::open(path).unwrap();
+                    parse(options, file, data);
+                }
+            }) ).collect::<Vec<_>>();
+        }
+        for (path, data) in initial {
+            display(Some(path), data, output);
         }
     }
 }
