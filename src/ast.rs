@@ -89,6 +89,7 @@ pub enum Expression<'a, Ann> {
     Array(Vec<Option<ExpressionNode<'a, Ann>>>),
     Object(Vec<PropertyDefinitionNode<'a, Ann>>),
     New(Box<ExpressionNode<'a, Ann>>, Vec<ExpressionNode<'a, Ann>>),
+    Binary(Box<ExpressionNode<'a, Ann>>, BinOp, Box<ExpressionNode<'a, Ann>>),
 }
 
 pub type BlockNode<'a, Ann> = Annotated<Ann, Block<'a, Ann>>;
@@ -102,6 +103,7 @@ pub enum Statement<'a, Ann> {
     Variable(Vec<BindingElementNode<'a, Ann>>),
     Expression(ExpressionNode<'a, Ann>),
     Return(Option<ExpressionNode<'a, Ann>>),
+    If(ExpressionNode<'a, Ann>, Box<StatementNode<'a, Ann>>, Option<Box<StatementNode<'a, Ann>>>),
 }
 
 pub type StatementListItemNode<'a, Ann> = Annotated<Ann, StatementListItem<'a, Ann>>;
@@ -120,6 +122,21 @@ pub enum AssignOp {
     TimesEq, DivEq, ModEq, PlusEq, MinusEq,
     LtLtEq, GtGtEq, GtGtGtEq,
     AndEq, XorEq, OrEq,
+}
+
+#[derive(Copy, Debug)]
+pub enum BinOp {
+    OrOr,
+    AndAnd,
+    Or,
+    Xor,
+    And,
+    EqEq, NEq, EqEqEq, NEqEq,
+    Lt, Gt, LtEq, GtEq, InstanceOf,
+    In,
+    LtLt, GtGt, GtGtGt,
+    Plus, Minus,
+    Times, Div, Mod,
 }
 
 #[derive(Copy, Debug)]

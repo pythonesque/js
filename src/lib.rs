@@ -5,7 +5,7 @@ extern crate unicode;
 
 use arena::TypedArena;
 
-use ast::{Annotation, AssignOp, BindingElement, Block, finish, Identifier,
+use ast::{Annotation, AssignOp, BindingElement, BinOp, Block, finish, Identifier,
           Property, PropertyDefinition, Statement};
 use ast::Annotated as A;
 use ast::BlockNode as BN;
@@ -73,7 +73,8 @@ pub struct RootCtx {
     ident_arena: TypedArena<String>,
 }
 
-pub struct Ctx<'a> {
+pub struct Ctx<'a, Ann, Start>
+{
     source: &'a str,
     index: Pos,
     rest: &'a str,
@@ -95,6 +96,7 @@ pub struct Ctx<'a> {
     strict: bool,
 
     root: &'a RootCtx,
+    binop_stack: Vec<(BinOp, Prec, EN<'a, Ann>, Start)>,
 }
 
 #[derive(Copy)]
@@ -323,7 +325,7 @@ fn assign_op<'a>(tok: &Token<'a>) -> Option<AssignOp> {
     })
 }
 
-pub fn identifier_name<'a>(tok: &Token<'a>) -> Option<&'a str> {
+fn identifier_name<'a>(tok: &Token<'a>) -> Option<&'a str> {
     use ast::Tok::*;
 
     Some(match tok.ty {
@@ -353,22 +355,48 @@ pub fn identifier_name<'a>(tok: &Token<'a>) -> Option<&'a str> {
     })
 }
 
+type Prec = u8;
+
+fn binop<'a>(tok: &Token<'a>, allow_in: bool) -> Option<(BinOp, Prec)> {
+    use ast::BinOp::*;
+
+    Some(match tok.ty {
+        T::OrOr => (OrOr, 1),
+        T::AndAnd => (AndAnd, 2),
+        T::Or => (Or, 3),
+        T::Xor => (Xor, 4),
+        T::And => (And, 5),
+        T::EqEq => (EqEq, 6), T::NEq => (NEq, 6), T::EqEqEq => (EqEqEq, 6), T::NEqEq => (NEqEq, 6),
+        T::Lt => (Lt, 7), T::Gt => (Gt, 7), T::LtEq => (LtEq, 7), T::GtEq => (GtEq, 7),
+            T::InstanceOf => (InstanceOf, 7),
+        T::In if allow_in => (In, 7),
+        T::In => return None,
+        T::LtLt => (LtLt, 8), T::GtGt => (GtGt, 8), T::GtGtGt => (GtGtGt, 8),
+        T::Plus => (Plus, 9), T::Minus => (Minus, 9),
+        T::Times => (Times, 11), T::Div => (Div, 11), T::Mod => (Mod, 11),
+
+        _ => return None
+    })
+}
+
 enum ScanHex { U, X }
 
 impl<'a> Annotation for () {
-    type Ctx = Ctx<'a>;
+    type Ctx = Ctx<'a, (), ()>;
     type Start = ();
 
-    fn start(_: &Ctx<'a>) -> () {
+    fn start(_: &Ctx<'a, (), ()>) -> () {
         ()
     }
 
-    fn finish(_: &(), _: &Ctx<'a>) -> () {
+    fn finish(_: &(), _: &Ctx<'a, (), ()>) -> () {
         ()
     }
 }
 
-impl<'a> Ctx<'a> {
+impl<'a, Ann, Start> Ctx<'a, Ann, Start>
+    where Ann: Annotation<Ctx=Self, Start=Start>
+{
     #[cold] #[inline(never)]
     pub fn unexpected_char(&self, opt: Option<(char, &str)>) -> Error<'a> {
         match opt {
@@ -1280,7 +1308,9 @@ struct Params<'a, Ann> {
     first_restricted: Option<Error<'a>>,
 }
 
-impl<'a> Ctx<'a> {
+impl<'a, Ann, Start> Ctx<'a, Ann, Start>
+    where Ann: Annotation<Ctx=Self, Start=Start>
+{
     #[cold] #[inline(never)]
     pub fn unexpected_token(&self, opt: Option<Token<'a>>) -> Error<'a> {
         match opt {
@@ -1289,9 +1319,7 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn start<Ann>(&self) -> <Ann as Annotation>::Start
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn start(&self) -> <Ann as Annotation>::Start {
         <Ann as Annotation>::start(self)
     }
 
@@ -1318,11 +1346,9 @@ impl<'a> Ctx<'a> {
 
     // 11.1.4 Array Initializer
 
-    fn parse_array_initializer<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_array_initializer(&mut self) -> PRes<'a, EN<'a, Ann>> {
         let mut elements = Vec::new();
-        let node = self.start::<Ann>();
+        let node = self.start();
 
         expect!(self, T::LBrace);
 
@@ -1349,10 +1375,8 @@ impl<'a> Ctx<'a> {
 
     // 11.1.5 Object Initialiser
 
-    fn parse_object_property_key<Ann>(&mut self) -> PRes<'a, PN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
-        let node = self.start::<Ann>();
+    fn parse_object_property_key(&mut self) -> PRes<'a, PN<'a, Ann>> {
+        let node = self.start();
 
         let token = self.lookahead;
         try!(self.lex());
@@ -1384,11 +1408,9 @@ impl<'a> Ctx<'a> {
     }
 
 
-    fn parse_object_property<Ann>(&mut self, /*has_proto*/_: &mut bool) -> PRes<'a, PDN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_object_property(&mut self, /*has_proto*/_: &mut bool) -> PRes<'a, PDN<'a, Ann>> {
         //let token = self.lookahead;
-        let node = self.start::<Ann>();
+        let node = self.start();
 
         let key = try!(self.parse_object_property_key());
         /*let maybe_method = try!(self.try_parse_method_definition(token, key, computed, node));
@@ -1411,12 +1433,10 @@ impl<'a> Ctx<'a> {
         Err(self.unexpected_token(self.lookahead))
     }
 
-    fn parse_object_initializer<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_object_initializer(&mut self) -> PRes<'a, EN<'a, Ann>> {
         let mut properties = Vec::new();
         let mut has_proto = false;
-        let node = self.start::<Ann>();
+        let node = self.start();
 
         expect!(self, T::LBrack);
 
@@ -1439,9 +1459,7 @@ impl<'a> Ctx<'a> {
     }
 
     // 11.1.6 The Grouping Operator
-    fn parse_group_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_group_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
         expect!(self, T::LParen);
 
         self.state.parenthesis_count += 1;
@@ -1455,10 +1473,8 @@ impl<'a> Ctx<'a> {
 
     // 11.1 Primary Expressions
 
-    fn parse_primary_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
-        let node = self.start::<Ann>();
+    fn parse_primary_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
+        let node = self.start();
         if let Some(token) = self.lookahead {
             let exp = match token.ty {
                 T::LParen => return self.parse_group_expression(),
@@ -1504,9 +1520,7 @@ impl<'a> Ctx<'a> {
     // 11.2 Left-Hand-Side Expressions
 
 
-    fn parse_arguments<Ann>(&mut self) -> PRes<'a, Vec<EN<'a, Ann>>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_arguments(&mut self) -> PRes<'a, Vec<EN<'a, Ann>>> {
         let mut args = Vec::new();
 
         expect!(self, T::LParen);
@@ -1525,10 +1539,8 @@ impl<'a> Ctx<'a> {
         Ok(args)
     }
 
-    fn parse_non_computed_property<Ann>(&mut self) -> PRes<'a, PN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
-        let node = self.start::<Ann>();
+    fn parse_non_computed_property(&mut self) -> PRes<'a, PN<'a, Ann>> {
+        let node = self.start();
 
         let token = self.lookahead;
         try!(self.lex());
@@ -1539,20 +1551,16 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn parse_non_computed_member<Ann>(&mut self) -> PRes<'a, PN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_non_computed_member(&mut self) -> PRes<'a, PN<'a, Ann>> {
         expect!(self, T::Dot);
 
         self.parse_non_computed_property()
     }
 
-    fn parse_computed_member<Ann>(&mut self) -> PRes<'a, PN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_computed_member(&mut self) -> PRes<'a, PN<'a, Ann>> {
         expect!(self, T::LBrace);
 
-        let node = self.start::<Ann>();
+        let node = self.start();
         let expr = try!(self.parse_expression());
         let node = finish(&node, self, Property::Computed(expr));
 
@@ -1561,10 +1569,8 @@ impl<'a> Ctx<'a> {
         Ok(node)
     }
 
-    fn parse_new_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
-        let node = self.start::<Ann>();
+    fn parse_new_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
+        let node = self.start();
 
         expect!(self, T::New);
         let callee = try!(self.parse_left_hand_side_expression());
@@ -1576,12 +1582,10 @@ impl<'a> Ctx<'a> {
         Ok(finish(&node, self, E::New(Box::new(callee), args)))
     }
 
-    fn parse_left_hand_side_expression_allow_call<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_left_hand_side_expression_allow_call(&mut self) -> PRes<'a, EN<'a, Ann>> {
         let previous_allow_in = self.state.allow_in;
 
-        let node = self.start::<Ann>();
+        let node = self.start();
         self.state.allow_in = true;
         let mut expr = try!(match self.lookahead {
             tk!(T::New) => self.parse_new_expression(),
@@ -1613,10 +1617,8 @@ impl<'a> Ctx<'a> {
         Ok(expr)
     }
 
-    fn parse_left_hand_side_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
-        let node = self.start::<Ann>();
+    fn parse_left_hand_side_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
+        let node = self.start();
 
         let mut expr = try!(match self.lookahead {
             tk!(T::New) => self.parse_new_expression(),
@@ -1643,42 +1645,120 @@ impl<'a> Ctx<'a> {
         Ok(expr)
     }
 
-    fn parse_postfix_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_postfix_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
         let expr = self.parse_left_hand_side_expression_allow_call();
 
         expr
     }
 
-    fn parse_unary_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    // 11.4 Unary Operators
+
+    fn parse_unary_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
         let expr = self.parse_postfix_expression();
 
         expr
     }
 
-    fn parse_binary_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
-        let left = self.parse_unary_expression();
+    // 11.5 Multiplicative Operators
+    // 11.6 Additive Operators
+    // 11.7 Bitwise Shift Operators
+    // 11.8 Relational Operators
+    // 11.9 Equality Operators
+    // 11.10 Binary Bitwise Operators
+    // 11.11 Binary Logical Operator s
 
-        left
+    #[inline]
+    fn shift_reduce_binary_expression(&mut self,
+                                      mut bot: EN<'a, Ann>,
+                                      bot_marker: Ann::Start,
+                                      bot_index: usize,
+                                     ) -> PRes<'a, EN<'a, Ann>> {
+        while let Some((op, prec)) = self.lookahead.and_then( |ref t| binop(t, self.state.allow_in) ) {
+            // Reduce: make a binary expression from the three topmost entries.
+            while let Some((op_, prec_, right_, right_marker_)) = self.binop_stack.pop() {
+                if self.binop_stack.len() <= bot_index || prec > prec_ {
+                    self.binop_stack.push((op_, prec_, right_, right_marker_));
+                    break
+                }
+                match self.binop_stack.pop() {
+                    Some((op__, prec__, left_, left_marker_)) => {
+                        if self.binop_stack.len() <= bot_index {
+                            // Stack bottom
+                            self.binop_stack.push((op__, prec__, left_, left_marker_));
+                            bot = finish(&bot_marker, self, E::Binary(Box::new(bot), op_, Box::new(right_)));
+                        } else {
+                            let expr = finish(&left_marker_, self, E::Binary(Box::new(left_), op_, Box::new(right_)));
+                            self.binop_stack.push((op__, prec__, expr, left_marker_));
+                        }
+                    },
+                    None => {
+                        // Stack bottom
+                        bot = finish(&bot_marker, self, E::Binary(Box::new(bot), op_, Box::new(right_)));
+                    }
+                }
+            }
+
+            // Shift.
+            try!(self.lex());
+            let marker = self.start();
+            let expr = try!(self.parse_unary_expression());
+            self.binop_stack.push((op, prec, expr, marker));
+        }
+
+        // Final reduce to clean-up the stack.
+        Ok(if self.binop_stack.len() > bot_index {
+            if let Some((mut op, _, mut expr, _)) = self.binop_stack.pop() {
+                while let Some((op_, prec_, expr_, marker_)) = self.binop_stack.pop() {
+                    if self.binop_stack.len() <= bot_index {
+                        // Stack bottom
+                        self.binop_stack.push((op_, prec_, expr_, marker_));
+                        break
+                    }
+                    expr = finish(&marker_, self, E::Binary(Box::new(expr_), op, Box::new(expr)));
+                    op = op_;
+                }
+                // Stack bottom
+                finish(&bot_marker, self, E::Binary(Box::new(bot), op, Box::new(expr)))
+            } else { bot }
+        } else { bot })
     }
 
-    fn parse_conditional_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_binary_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
+        let left_marker = self.start();
+        let left = try!(self.parse_unary_expression());
+
+        // if arrow .... return left
+
+        let (op, prec) = match self.lookahead.and_then( |ref t| binop(t, self.state.allow_in) ) {
+            Some(op) => op,
+            None => return Ok(left)
+        };
+        try!(self.lex());
+
+        let right_marker = self.start();
+        let right = try!(self.parse_unary_expression());
+
+        let bottom = self.binop_stack.len();
+
+        self.binop_stack.push((op, prec, right, right_marker));
+
+        let expr = self.shift_reduce_binary_expression(left, left_marker, bottom);
+        if self.binop_stack.len() > bottom {
+            // Important that truncate be called before returning, to keep the stack clean.
+            self.binop_stack.truncate(bottom);
+        }
+
+        expr
+    }
+
+    fn parse_conditional_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
         let expr = self.parse_binary_expression();
 
         expr
     }
 
-    fn parse_assignment_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
-        let node = self.start::<Ann>();
+    fn parse_assignment_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
+        let node = self.start();
         let token = match self.lookahead {
             Some(token) => token,
             None => return Err(Error::UnexpectedEOF)
@@ -1710,17 +1790,13 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn parse_expression<Ann>(&mut self) -> PRes<'a, EN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
         let expr = self.parse_assignment_expression();
 
         expr
     }
 
-    fn parse_statement_list<Ann>(&mut self) -> PRes<'a, Block<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_statement_list(&mut self) -> PRes<'a, Block<'a, Ann>> {
         let mut list = Vec::new();
         while let Some(token) = self.lookahead {
             if let T::RBrack = token.ty { break }
@@ -1730,9 +1806,7 @@ impl<'a> Ctx<'a> {
         Ok(list)
     }
 
-    fn parse_block<Ann>(&mut self) -> PRes<'a, Block<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_block(&mut self) -> PRes<'a, Block<'a, Ann>> {
         expect!(self, T::LBrack);
 
         let block = try!(self.parse_statement_list());
@@ -1742,10 +1816,8 @@ impl<'a> Ctx<'a> {
         Ok(block)
     }
 
-    fn parse_variable_identifier<Ann>(&mut self) -> PRes<'a, IN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
-        let node = self.start::<Ann>();
+    fn parse_variable_identifier(&mut self) -> PRes<'a, IN<'a, Ann>> {
+        let node = self.start();
         let token = self.lookahead;
         try!(self.lex());
         match token {
@@ -1762,10 +1834,8 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn parse_variable_declaration<Ann>(&mut self) -> PRes<'a, BEN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
-        let node = self.start::<Ann>();
+    fn parse_variable_declaration(&mut self) -> PRes<'a, BEN<'a, Ann>> {
+        let node = self.start();
 
         let id = try!(self.parse_variable_identifier());
 
@@ -1787,9 +1857,7 @@ impl<'a> Ctx<'a> {
         Ok(finish(&node, self, binding))
     }
 
-    fn parse_variable_declaration_list<Ann>(&mut self) -> PRes<'a, Vec<BEN<'a, Ann>>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_variable_declaration_list(&mut self) -> PRes<'a, Vec<BEN<'a, Ann>>> {
         let mut list = Vec::new();
 
         loop {
@@ -1806,9 +1874,7 @@ impl<'a> Ctx<'a> {
         Ok(list)
     }
 
-    fn parse_variable_statement<Ann>(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_variable_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
         expect!(self, T::Var);
 
         let declarations = try!(self.parse_variable_declaration_list());
@@ -1818,14 +1884,14 @@ impl<'a> Ctx<'a> {
         Ok(finish(&node, self, Statement::Variable(declarations)))
     }
 
-    fn parse_empty_statement<Ann>(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_empty_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
         expect!(self, T::Semi);
         Ok(finish(&node, self, Statement::Empty))
     }
 
     // NOTE: This seems to be redundant.
+    // 12.4 Expression Statement
+
     /*fn parse_expression_statement<Ann>(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
     {
@@ -1834,11 +1900,30 @@ impl<'a> Ctx<'a> {
         Ok(finish(node, self, Statement::Expression(expr)))
     }*/
 
+    // 12.5 If statement
+
+    fn parse_if_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+        expect!(self, T::If);
+
+        expect!(self, T::LParen);
+
+        let test = try!(self.parse_expression());
+
+        expect!(self, T::RParen);
+
+        let consequent = try!(self.parse_statement());
+
+        let alternate = match self.lookahead {
+            tk!(T::Else) => { try!(self.lex()); Some(Box::new(try!(self.parse_statement()))) },
+            _ => None
+        };
+
+        Ok(finish(&node, self, Statement::If(test, Box::new(consequent), alternate)))
+    }
+
     // 12.9. The return statement
 
-    fn parse_return_statement<Ann>(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_return_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
         let mut argument = None;
 
         expect!(self, T::Return);
@@ -1864,10 +1949,8 @@ impl<'a> Ctx<'a> {
         return Ok(finish(&node, self, Statement::Return(argument)));
     }
 
-    fn parse_statement<Ann>(&mut self) -> PRes<'a, SN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
-        let node = self.start::<Ann>();
+    fn parse_statement(&mut self) -> PRes<'a, SN<'a, Ann>> {
+        let node = self.start();
         match self.lookahead {
             tk!(T::LBrack) => {
                 let body = try!(self.parse_block());
@@ -1875,8 +1958,20 @@ impl<'a> Ctx<'a> {
             },
             tk!(T::Semi) => self.parse_empty_statement(node),
             //tk!(T::LParen) => return self.parse_expression_statement(node),
+            //tk!(T::Break) => self.parse_break_statement(node),
+            //tk!(T::Continue) => self.parse_continue_statement(node),
+            //tk!(T::Debugger) => self.parse_debugger_statement(node),
+            //tk!(T::Do) => self.parse_do_while_statement(node),
+            //tk!(T::For) => self.parse_for_while_statement(node),
+            //tk!(T::Function) => self.parse_function_statement(node),
+            tk!(T::If) => self.parse_if_statement(node),
             tk!(T::Return) => self.parse_return_statement(node),
+            //tk!(T::Switch) => self.parse_switch_statement(node),
+            //tk!(T::Throw) => self.parse_throw_statement(node),
+            //tk!(T::Try) => self.parse_try_statement(node),
             tk!(T::Var) => self.parse_variable_statement(node),
+            //tk!(T::While) => self.parse_while_statement(node),
+            //tk!(T::With) => self.parse_with_statement(node),
             //Some(_) => {
             _ => {
                 let expr = try!(self.parse_expression());
@@ -1889,12 +1984,10 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn parse_function_source_elements<Ann>(&mut self) -> PRes<'a, BN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_function_source_elements(&mut self) -> PRes<'a, BN<'a, Ann>> {
         let mut body = Vec::new();
         let mut first_restricted = None;
-        let node = self.start::<Ann>();
+        let node = self.start();
 
         expect!(self, T::LBrack);
 
@@ -1957,12 +2050,10 @@ impl<'a> Ctx<'a> {
         return Ok(finish(&node, self, body));
     }
 
-    fn validate_param<Ann>(&self,
-                           params: &mut Params<'a, Ann>,
-                           param: Token<'a>,
-                           name: Identifier<'a>)
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn validate_param(&self,
+                      params: &mut Params<'a, Ann>,
+                      param: Token<'a>,
+                      name: Identifier<'a>) {
         // Guess: the vector is small enough that scanning through it is probably faster than
         // maintaining the hash.  If wrong, we can do it differently.
         if self.strict {
@@ -1983,9 +2074,7 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn parse_param<Ann>(&mut self, params: &mut Params<'a, Ann>) -> PRes<'a, bool>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_param(&mut self, params: &mut Params<'a, Ann>) -> PRes<'a, bool> {
         let rest = match self.lookahead {
             tk!(T::Ellipsis) => {
                 try!(self.lex());
@@ -1999,7 +2088,7 @@ impl<'a> Ctx<'a> {
             None => return Err(Error::UnexpectedEOF),
         };
 
-        let node = self.start::<Ann>();
+        let node = self.start();
         let param = try!(self.parse_variable_identifier());
         self.validate_param(params, token, &param);
 
@@ -2024,9 +2113,7 @@ impl<'a> Ctx<'a> {
         Ok(!tmatch!(self.lookahead, T::RParen))
     }
 
-    fn parse_params<Ann>(&mut self, first_restricted: Option<Error<'a>>) -> PRes<'a, Params<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_params(&mut self, first_restricted: Option<Error<'a>>) -> PRes<'a, Params<'a, Ann>> {
         let mut params = Params {
             params: Vec::new(),
             defaults: Vec::new(),
@@ -2048,11 +2135,9 @@ impl<'a> Ctx<'a> {
         Ok(params)
     }
 
-    fn parse_function_declaration<Ann>(&mut self,
-                                       node: <Ann as Annotation>::Start
-                                      ) -> PRes<'a, SLIN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_function_declaration(&mut self,
+                                  node: <Ann as Annotation>::Start
+                                 ) -> PRes<'a, SLIN<'a, Ann>> {
         expect!(self, T::Function);
         let id;
         let first_restricted;
@@ -2095,9 +2180,9 @@ impl<'a> Ctx<'a> {
         })))
     }
 
-    fn parse_function_expression<Ann>(&mut self,
-                                      node: <Ann as Annotation>::Start
-                                     ) -> PRes<'a, EN<'a, Ann>>
+    fn parse_function_expression(&mut self,
+                                 node: <Ann as Annotation>::Start
+                                ) -> PRes<'a, EN<'a, Ann>>
         where Ann: Annotation<Ctx=Self>
     {
         expect!(self, T::Function);
@@ -2146,10 +2231,8 @@ impl<'a> Ctx<'a> {
         })))
     }
 
-    fn parse_statement_list_item<Ann>(&mut self) -> PRes<'a, SLIN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
-        let node = self.start::<Ann>();
+    fn parse_statement_list_item(&mut self) -> PRes<'a, SLIN<'a, Ann>> {
+        let node = self.start();
 
         match self.lookahead {
             tk!(T::Function) => self.parse_function_declaration(node),
@@ -2157,9 +2240,7 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn parse_script_body<Ann>(&mut self) -> PRes<'a, Vec<SLIN<'a, Ann>>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_script_body(&mut self) -> PRes<'a, Vec<SLIN<'a, Ann>>> {
         let mut body = Vec::new();
         let mut first_restricted = None;
 
@@ -2196,11 +2277,9 @@ impl<'a> Ctx<'a> {
         Ok(body)
     }
 
-    fn parse_program<Ann>(&mut self) -> PRes<'a, ScriptN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
-    {
+    fn parse_program(&mut self) -> PRes<'a, ScriptN<'a, Ann>> {
         try!(self.peek());
-        let node = self.start::<Ann>();
+        let node = self.start();
         self.strict = false;
 
         let body = try!(self.parse_script_body());
@@ -2209,8 +2288,8 @@ impl<'a> Ctx<'a> {
 }
 
 
-pub fn parse<'a, Ann>(root: &'a RootCtx, code: &'a str, /*options*/_: &Options) -> PRes<'a, ScriptN<'a, Ann>>
-        where Ann: Annotation<Ctx=Ctx<'a>>
+pub fn parse<'a, Ann, Start>(root: &'a RootCtx, code: &'a str, /*options*/_: &Options) -> PRes<'a, ScriptN<'a, Ann>>
+        where Ann: Annotation<Ctx=Ctx<'a, Ann, Start>, Start=Start>
     {
     let source = code;
     let index = 0;
@@ -2256,6 +2335,7 @@ pub fn parse<'a, Ann>(root: &'a RootCtx, code: &'a str, /*options*/_: &Options) 
         rest: source,
 
         root: root,
+        binop_stack: Vec::new(),
     };
 
     ctx.parse_program()
@@ -2264,5 +2344,5 @@ pub fn parse<'a, Ann>(root: &'a RootCtx, code: &'a str, /*options*/_: &Options) 
 #[test]
 fn it_works() {
     let root = RootCtx::new();
-    println!("{:?}", parse::<()>(&root, include_str!("../tests/test.js"), &Options).unwrap());
+    println!("{:?}", parse::<(), ()>(&root, include_str!("../tests/test.js"), &Options).unwrap());
 }

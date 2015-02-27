@@ -26,7 +26,7 @@ fn parse<'a, I>(options: &Options, mut input: I, data: &'a mut Option<Data>) -> 
     let ctx = RootCtx::new();
     *data = Some(Data(ctx, string, None));
     let Data(ref ctx, ref string, ref mut res) = *data.as_mut().unwrap();
-    *res = Some(js::parse::<()>(ctx, string, options));
+    *res = Some(js::parse::<(), ()>(ctx, string, options));
     res.as_ref().unwrap()
 }
 
