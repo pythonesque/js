@@ -33,7 +33,7 @@ use unicode::str::Utf16Encoder;
 
 pub mod ast;
 
-pub type Pos = usize;
+pub type Pos = u16;
 
 macro_rules! tk {
     ($pat:pat) => (Some(Token { ty: $pat , .. }))
@@ -77,6 +77,7 @@ pub struct Ctx<'a, Ann, Start>
 {
     source: &'a str,
     index: Pos,
+    byte_index: usize,
     rest: &'a str,
     line_number: Pos,
     line_start: Pos,
@@ -417,6 +418,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             match hex_digit(ch) {
                 Some(i) => {
                     self.index += 1;
+                    self.byte_index = self.source.char_range_at(self.byte_index).next;
                     self.rest = rest;
                     code = code * 16 + i as u16;
                 },
@@ -434,6 +436,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
             self.index += 1;
+            self.byte_index = self.source.char_range_at(self.byte_index).next;
             self.rest = rest;
             match hex_digit(ch) {
                 Some(code_) => code = code * 16 + code_,
@@ -458,6 +461,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         id.push(match self.rest.slice_shift_char() {
             Some(('u', rest)) => {
                 self.index += 1;
+                self.byte_index = self.source.char_range_at(self.byte_index).next;
                 self.rest = rest;
                 match try!(self.scan_hex_escape(ScanHex::U)) as u32 {
                     ch @ UTF16_BACKSLASH | ch if !is_identifier_start(ch) =>
@@ -475,12 +479,14 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
             if !is_identifier_part(ch as u32) { break }
             self.index += 1;
+            self.byte_index = self.source.char_range_at(self.byte_index).next;
             self.rest = rest;
 
             match ch {
                 '\\' => match self.rest.slice_shift_char() {
                     Some(('u', rest)) => {
                         self.index += 1;
+                        self.byte_index = self.source.char_range_at(self.byte_index).next;
                         self.rest = rest;
                         id.push(match try!(self.scan_hex_escape(ScanHex::U)) as u32 {
                             ch @ UTF16_BACKSLASH | ch if !is_identifier_part(ch) =>
@@ -500,27 +506,29 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
     }
 
     fn get_identifier(&mut self) -> PRes<'a, &'a str> {
-        let start_index = self.index;
+        let start_byte_index = self.byte_index;
 
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
             match ch {
                 '\\' => {
                     // Blackslash (U+005C) marks Unicode escape sequence.
                     let mut id = self.root.ident_arena
-                        .alloc(self.source[start_index..self.index].to_string());
+                        .alloc(self.source[start_byte_index..self.byte_index].to_string());
                     self.index += 1;
+                    self.byte_index = self.source.char_range_at(self.byte_index).next;
                     self.rest = rest;
                     return self.get_escaped_identifier(&mut id).and(Ok(id));
                 },
                 ch if is_identifier_part(ch as u32) => {
                     self.index += 1;
+                    self.byte_index = self.source.char_range_at(self.byte_index).next;
                     self.rest = rest;
                 },
                 _ => break
             }
         }
         if self.rest.len() == 0 { return Err(Error::ExpectedIdent) }
-        Ok(&self.source[start_index..self.index])
+        Ok(&self.source[start_byte_index..self.byte_index])
     }
 
     fn scan_identifier(&mut self) -> PRes<'a, Token<'a>> {
@@ -528,6 +536,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         let id = try!(match self.rest.slice_shift_char() {
             Some(('\\', rest)) => {
                 self.index += 1;
+                self.byte_index = self.source.char_range_at(self.byte_index).next;
                 self.rest = rest;
                 let mut id = self.root.ident_arena.alloc(String::new());
                 self.get_escaped_identifier(id).and(Ok(&**id))
@@ -580,6 +589,8 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                             Some(('.', rest_)) => {
                                 // Spread operator: ...
                                 self.index += 2;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
                                 rest = rest_;
                                 Ellipsis
                             },
@@ -601,28 +612,37 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                             Some(('>', rest_)) => match rest_.slice_shift_char() {
                                 Some(('=', rest_)) => {
                                     self.index += 3;
+                                    self.byte_index = self.source.char_range_at(self.byte_index).next;
+                                    self.byte_index = self.source.char_range_at(self.byte_index).next;
+                                    self.byte_index = self.source.char_range_at(self.byte_index).next;
                                     rest = rest_;
                                     GtGtGtEq
                                 },
                                 _ => {
                                     self.index += 2;
+                                    self.byte_index = self.source.char_range_at(self.byte_index).next;
+                                    self.byte_index = self.source.char_range_at(self.byte_index).next;
                                     rest = rest_;
                                     GtGtGt
                                 }
                             },
                             Some(('=', rest_)) => {
                                 self.index += 2;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
                                 rest = rest_;
                                 GtGtEq
                             },
                             _ => {
                                 self.index += 1;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
                                 rest = rest_;
                                 GtGt
                             }
                         },
                         Some(('=', rest_)) => {
                             self.index += 1;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             rest = rest_;
                             GtEq
                         },
@@ -632,17 +652,21 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                         Some(('=', rest_)) => match rest_.slice_shift_char() {
                             Some(('=', rest_)) => {
                                 self.index += 2;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
                                 rest = rest_;
                                 EqEqEq
                             },
                             _ => {
                                 self.index += 1;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
                                 rest = rest_;
                                 EqEq
                             }
                         },
                         Some(('>', rest_)) => {
                             self.index += 1;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             rest = rest_;
                             Arrow
                         },
@@ -652,11 +676,14 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                         Some(('=', rest_)) => match rest_.slice_shift_char() {
                             Some(('=', rest_)) => {
                                 self.index += 2;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
                                 rest = rest_;
                                 NEqEq
                             },
                             _ => {
                                 self.index += 1;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
                                 rest = rest_;
                                 NEq
                             }
@@ -667,17 +694,21 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                         Some(('<', rest_)) => match rest_.slice_shift_char() {
                             Some(('=', rest_)) => {
                                 self.index += 2;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
                                 rest = rest_;
                                 LtLtEq
                             },
                             _ => {
                                 self.index += 1;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
                                 rest = rest_;
                                 LtLt
                             }
                         },
                         Some(('=', rest_)) => {
                             self.index += 1;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             rest = rest_;
                             LtEq
                         },
@@ -686,11 +717,13 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     '&' => match rest.slice_shift_char() {
                         Some(('&', rest_)) => {
                             self.index += 1;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             rest = rest_;
                             AndAnd
                         },
                         Some(('=', rest_)) => {
                             self.index += 1;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             rest = rest_;
                             AndEq
                         },
@@ -699,11 +732,13 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     '|' => match rest.slice_shift_char() {
                         Some(('|', rest_)) => {
                             self.index += 1;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             rest = rest_;
                             OrOr
                         },
                         Some(('=', rest_)) => {
                             self.index += 1;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             rest = rest_;
                             OrEq
                         },
@@ -712,11 +747,13 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     '+' => match rest.slice_shift_char() {
                         Some(('+', rest_)) => {
                             self.index += 1;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             rest = rest_;
                             PlusPlus
                         },
                         Some(('=', rest_)) => {
                             self.index += 1;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             rest = rest_;
                             PlusEq
                         },
@@ -725,11 +762,13 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     '-' => match rest.slice_shift_char() {
                         Some(('-', rest_)) => {
                             self.index += 1;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             rest = rest_;
                             MinusMinus
                         },
                         Some(('=', rest_)) => {
                             self.index += 1;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             rest = rest_;
                             MinusEq
                         },
@@ -738,6 +777,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     '*' => match rest.slice_shift_char() {
                         Some(('=', rest_)) => {
                             self.index += 1;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             rest = rest_;
                             TimesEq
                         },
@@ -746,6 +786,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     '/' => match rest.slice_shift_char() {
                         Some(('=', rest_)) => {
                             self.index += 1;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             rest = rest_;
                             DivEq
                         },
@@ -754,6 +795,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     '^' => match rest.slice_shift_char() {
                         Some(('=', rest_)) => {
                             self.index += 1;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             rest = rest_;
                             XorEq
                         },
@@ -762,6 +804,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     '%' => match rest.slice_shift_char() {
                         Some(('=', rest_)) => {
                             self.index += 1;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             rest = rest_;
                             ModEq
                         },
@@ -770,6 +813,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     ch => return Err(Error::UnexpectedChar(ch))
                 };
                 self.index += 1;
+                self.byte_index = self.source.char_range_at(self.byte_index).next;
                 self.rest = rest;
                 ty
             },
@@ -785,18 +829,19 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
     }
 
     fn scan_hex_literal(&mut self, start: Pos) -> PRes<'a, Token<'a>> {
-        let begin = self.index;
+        let byte_begin = self.byte_index;
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
             if let None = hex_digit(ch) { break }
             self.index += 1;
+            self.byte_index = self.source.char_range_at(self.byte_index).next;
             self.rest = rest;
         }
-        if begin == self.index { return Err(self.unexpected_char(self.rest.slice_shift_char())) }
+        if byte_begin == self.byte_index { return Err(self.unexpected_char(self.rest.slice_shift_char())) }
         if let Some(ch) = self.rest.chars().next() {
             if is_identifier_start(ch as u32) { return Err(Error::UnexpectedChar(ch)) }
         }
         Ok(Token {
-            ty: T::NumericLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 16))),
+            ty: T::NumericLiteral(try!(num::from_str_radix(&self.source[byte_begin..self.byte_index], 16))),
             line_number: self.line_number,
             line_start: self.line_start,
             start: start,
@@ -805,18 +850,19 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
     }
 
     fn scan_binary_literal(&mut self, start: Pos) -> PRes<'a, Token<'a>> {
-        let begin = self.index;
+        let byte_begin = self.byte_index;
         while let Some(('0'...'1', rest)) = self.rest.slice_shift_char() {
             self.index += 1;
+            self.byte_index = self.source.char_range_at(self.byte_index).next;
             self.rest = rest;
         }
         // only 0b or 0B
-        if begin == self.index { return Err(self.unexpected_char(self.rest.slice_shift_char())) }
+        if byte_begin == self.byte_index { return Err(self.unexpected_char(self.rest.slice_shift_char())) }
         if let Some(ch) = self.rest.chars().next() {
             if is_identifier_start(ch as u32) || is_decimal_digit(ch) { return Err(Error::UnexpectedChar(ch)) }
         }
         Ok(Token {
-            ty: T::NumericLiteral(try!(num::from_str_radix(&self.source[begin..self.index], 2))),
+            ty: T::NumericLiteral(try!(num::from_str_radix(&self.source[byte_begin..self.byte_index], 2))),
             line_number: self.line_number,
             line_start: self.line_start,
             start: start,
@@ -829,23 +875,27 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         where Tag: FnOnce(f64) -> T<'a>,
     {
         let octal = match octal_digit(prefix) { Some(_) => true, _ => false };
-        let begin = if octal { self.index } else { self.index + 1 };
+        let byte_begin = if octal { self.byte_index } else {
+            self.source.char_range_at(self.byte_index).next
+        };
 
         self.index += 1;
+        self.byte_index = self.source.char_range_at(self.byte_index).next;
         self.rest = rest;
 
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
             if let None = octal_digit(ch) { break }
             self.index += 1;
+            self.byte_index = self.source.char_range_at(self.byte_index).next;
             self.rest = rest;
         }
         // only 0o or 0O
-        if begin == self.index { return Err(self.unexpected_char(self.rest.slice_shift_char())) }
+        if byte_begin == self.byte_index { return Err(self.unexpected_char(self.rest.slice_shift_char())) }
         if let Some(ch) = self.rest.chars().next() {
             if is_identifier_start(ch as u32) || is_decimal_digit(ch) { return Err(Error::UnexpectedChar(ch)) }
         }
         Ok(Token {
-            ty: tag(try!(num::from_str_radix(&self.source[begin..self.index], 8))),
+            ty: tag(try!(num::from_str_radix(&self.source[byte_begin..self.byte_index], 8))),
             line_number: self.line_number,
             line_start: self.line_start,
             start: start,
@@ -863,20 +913,24 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
     fn scan_numeric_literal(&mut self, ch: char, rest: &'a str) -> PRes<'a, Token<'a>> {
         let start = self.index;
+        let start_byte = self.byte_index;
 
         if ch != '.' {
             self.index += 1;
+            self.byte_index = self.source.char_range_at(self.byte_index).next;
             self.rest = rest;
 
             if ch == '0' {
                 match self.rest.slice_shift_char() {
                     Some(('x', rest)) | Some(('X', rest)) => {
                         self.index += 1;
+                        self.byte_index = self.source.char_range_at(self.byte_index).next;
                         self.rest = rest;
                         return self.scan_hex_literal(start);
                     },
                     Some(('b', rest)) | Some(('B', rest)) => {
                         self.index += 1;
+                        self.byte_index = self.source.char_range_at(self.byte_index).next;
                         self.rest = rest;
                         return self.scan_binary_literal(start);
                     },
@@ -895,17 +949,20 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             while let Some((ch, rest)) = self.rest.slice_shift_char() {
                 if !is_decimal_digit(ch) { break }
                 self.index += 1;
+                self.byte_index = self.source.char_range_at(self.byte_index).next;
                 self.rest = rest;
             }
         }
 
         if let Some(('.', rest)) = self.rest.slice_shift_char() {
             self.index += 1;
+            self.byte_index = self.source.char_range_at(self.byte_index).next;
             self.rest = rest;
 
             while let Some((ch, rest)) = self.rest.slice_shift_char() {
                 if !is_decimal_digit(ch) { break }
                 self.index += 1;
+                self.byte_index = self.source.char_range_at(self.byte_index).next;
                 self.rest = rest;
             }
         }
@@ -913,10 +970,12 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         match self.rest.slice_shift_char() {
             Some(('e', rest)) | Some(('E', rest)) => {
                 self.index += 1;
+                self.byte_index = self.source.char_range_at(self.byte_index).next;
                 self.rest = rest;
                 match self.rest.slice_shift_char() {
                     Some(('+', rest)) | Some(('-', rest)) => {
                         self.index += 1;
+                        self.byte_index = self.source.char_range_at(self.byte_index).next;
                         self.rest = rest;
                     },
                     _ => {}
@@ -924,10 +983,12 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 if let Some((ch, rest)) = self.rest.slice_shift_char() {
                     if is_decimal_digit(ch) {
                         self.index += 1;
+                        self.byte_index = self.source.char_range_at(self.byte_index).next;
                         self.rest = rest;
                         while let Some((ch, rest)) = self.rest.slice_shift_char() {
                             if !is_decimal_digit(ch) { break }
                             self.index += 1;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             self.rest = rest;
                         }
                     } else { return Err(Error::UnexpectedChar(ch)); }
@@ -941,7 +1002,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         }
 
         Ok(Token {
-            ty: T::NumericLiteral(try!(self.source[start..self.index].parse())),
+            ty: T::NumericLiteral(try!(self.source[start_byte..self.byte_index].parse())),
             line_number: self.line_number,
             line_start: self.line_start,
             start: start,
@@ -956,6 +1017,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
             self.index += 1;
+            self.byte_index = self.source.char_range_at(self.byte_index).next;
             self.rest = rest;
 
             if ch == quote { break }
@@ -963,6 +1025,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 match self.rest.slice_shift_char() {
                     Some((ch, rest)) => {
                         self.index += 1;
+                        self.byte_index = self.source.char_range_at(self.byte_index).next;
                         self.rest = rest;
                         if !is_line_terminator(ch) {
                             match ch {
@@ -970,16 +1033,19 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                                     match self.rest.slice_shift_char() {
                                         Some(('{', rest)) => {
                                             self.index += 1;
+                                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                                             self.rest = rest;
                                             try!(self.scan_unicode_code_point_escape(s));
                                         },
                                         _ => {
                                             let restore = self.index;
+                                            let byte_restore = self.byte_index;
                                             let prefix = if ch == 'u' { ScanHex::U } else { ScanHex::X };
                                             match self.scan_hex_escape(prefix) {
                                                 Ok(c) => s.push(c),
                                                 _ => {
                                                     self.index = restore;
+                                                    self.byte_index = byte_restore;
                                                     self.rest = rest;
                                                     s.extend(Utf16Encoder::new(Some(ch).into_iter()));
                                                 }
@@ -1003,6 +1069,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                                                 octal = true;
                                                 code = code * 8 + code_;
                                                 self.index += 1;
+                                                self.byte_index = self.source.char_range_at(self.byte_index).next;
                                                 self.rest = rest;
 
                                                 // 3 digits are only allowed when string starts
@@ -1011,6 +1078,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                                                     if let Some((ch_, rest)) = self.rest.slice_shift_char() {
                                                         if let Some(code_) = octal_digit(ch_) {
                                                             self.index += 1;
+                                                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                                                             self.rest = rest;
                                                             code = code * 8 + code_;
                                                         }
@@ -1028,6 +1096,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                             if ch == '\r' {
                                 if let Some(('\n', rest)) = self.rest.slice_shift_char() {
                                     self.index += 1;
+                                    self.byte_index = self.source.char_range_at(self.byte_index).next;
                                     self.rest = rest;
                                 }
                             }
@@ -1055,22 +1124,25 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
     fn scan_string_literal(&mut self, quote: char) -> PRes<'a, Token<'a>>
     {
         let start = self.index - 1;
+        let byte_start = self.byte_index - 1;
 
         loop {
             match self.rest.slice_shift_char() {
                 Some((ch, rest)) => {
                     if ch == quote {
                         self.index += 1;
+                        self.byte_index = self.source.char_range_at(self.byte_index).next;
                         self.rest = rest;
                         break
                     }
                     else if ch == '\\' {
                         let s = self.root.string_arena
-                            .alloc(Utf16Encoder::new(self.source[start + 1..self.index].chars())
+                            .alloc(Utf16Encoder::new(self.source[byte_start + 1..self.byte_index].chars())
                                    .collect());
                         return self.scan_escaped_string_literal(quote, start, s);
                     } else {
                         self.index += 1;
+                        self.byte_index = self.source.char_range_at(self.byte_index).next;
                         self.rest = rest;
                         if is_line_terminator(ch) { return Err(Error::UnexpectedChar(ch)); }
                     }
@@ -1079,7 +1151,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             }
         }
         Ok(Token {
-            ty: T::StringLiteral(&self.source[start + 1..self.index - 1]),
+            ty: T::StringLiteral(&self.source[byte_start + 1..self.byte_index - 1]),
             line_number: self.start_line_number,
             line_start: self.start_line_start,
             start: start,
@@ -1092,6 +1164,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         //let loc =
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
             self.index += 1;
+            self.byte_index = self.source.char_range_at(self.byte_index).next;
             self.rest = rest;
             if is_line_terminator(ch) {
                 self.has_line_terminator = true;
@@ -1099,6 +1172,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 if ch == '\x0D' {
                     if let Some(('\x0A', rest)) = self.rest.slice_shift_char() {
                         self.index += 1;
+                        self.byte_index = self.source.char_range_at(self.byte_index).next;
                         self.rest = rest;
                     }
                 }
@@ -1120,6 +1194,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     match rest.slice_shift_char() {
                         Some(('\x0A', rest_)) => {
                             self.index += 1;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             self.rest = rest_;
                         },
                         _ => self.rest = rest
@@ -1128,19 +1203,24 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 self.has_line_terminator = true;
                 self.line_number += 1;
                 self.index += 1;
+                self.byte_index = self.source.char_range_at(self.byte_index).next;
                 self.line_start = self.index;
             } else if ch == '*' {
                 // Block comment ends with '*/'.
                 if let Some(('/', rest)) = rest.slice_shift_char() {
                     self.index += 2;
+                    self.byte_index = self.source.char_range_at(self.byte_index).next;
+                    self.byte_index = self.source.char_range_at(self.byte_index).next;
                     self.rest = rest;
                     // if extra.comments ...
                     return Ok(());
                 }
                 self.index += 1;
+                self.byte_index = self.source.char_range_at(self.byte_index).next;
                 self.rest = rest;
             } else {
                 self.index += 1;
+                self.byte_index = self.source.char_range_at(self.byte_index).next;
                 self.rest = rest;
             }
         }
@@ -1155,15 +1235,18 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
             if is_white_space(ch) {
                 self.index += 1;
+                self.byte_index = self.source.char_range_at(self.byte_index).next;
                 self.rest = rest;
             } else if is_line_terminator(ch) {
                 self.has_line_terminator = true;
                 self.index += 1;
+                self.byte_index = self.source.char_range_at(self.byte_index).next;
                 self.rest = rest;
                 if ch == '\x0D' {
                     if let Some(('\x0A', rest)) = self.rest.slice_shift_char() {
                         self.rest = rest;
                         self.index += 1;
+                        self.byte_index = self.source.char_range_at(self.byte_index).next;
                     }
                 }
                 self.line_number += 1;
@@ -1173,12 +1256,16 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 match rest.slice_shift_char() {
                     Some(('/', rest)) => {
                         self.index += 2;
+                        self.byte_index = self.source.char_range_at(self.byte_index).next;
+                        self.byte_index = self.source.char_range_at(self.byte_index).next;
                         self.rest = rest;
                         self.skip_single_line_comment(2);
                         start = true;
                     },
                     Some(('*', rest)) => {
                         self.index += 2;
+                        self.byte_index = self.source.char_range_at(self.byte_index).next;
+                        self.byte_index = self.source.char_range_at(self.byte_index).next;
                         self.rest = rest;
                         try!(self.skip_multi_line_comment())
                     },
@@ -1191,6 +1278,9 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                         Some(('\x3E', rest)) => {
                             // '-->' is a single-line comment
                             self.index += 3;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
                             self.rest = rest;
                             self.skip_single_line_comment(3);
                         },
@@ -1204,6 +1294,10 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                         Some(('-', rest)) => match rest.slice_shift_char() {
                             Some(('-', rest)) => {
                                 self.index += 4;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
+                                self.byte_index = self.source.char_range_at(self.byte_index).next;
                                 self.rest = rest;
                                 self.skip_single_line_comment(4);
                             },
@@ -1234,6 +1328,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             Some(('(', _)) | Some((')', _)) | Some((';', _)) => self.scan_punctuator(),
             Some((ch @ '\'', rest)) | Some((ch @ '"', rest)) => {
                 self.index += 1;
+                self.byte_index = self.source.char_range_at(self.byte_index).next;
                 self.rest = rest;
                 self.scan_string_literal(ch)
             },
@@ -2333,6 +2428,7 @@ pub fn parse<'a, Ann, Start>(root: &'a RootCtx, code: &'a str, /*options*/_: &Op
         strict: false,
 
         rest: source,
+        byte_index: 0,
 
         root: root,
         binop_stack: Vec::new(),
