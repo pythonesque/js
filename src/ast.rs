@@ -91,6 +91,7 @@ pub enum Expression<'a, Ann> {
     New(Box<ExpressionNode<'a, Ann>>, Vec<ExpressionNode<'a, Ann>>),
     Binary(BinOp, Box<(ExpressionNode<'a, Ann>, ExpressionNode<'a, Ann>)>),
     Conditional(Box<(ExpressionNode<'a, Ann>, ExpressionNode<'a, Ann>, ExpressionNode<'a, Ann>)>),
+    Unary(UnOp, Box<ExpressionNode<'a, Ann>>)
 }
 
 pub type BlockNode<'a, Ann> = Annotated<Ann, Block<'a, Ann>>;
@@ -138,6 +139,19 @@ pub enum BinOp {
     LtLt, GtGt, GtGtGt,
     Plus, Minus,
     Times, Div, Mod,
+}
+
+#[derive(Copy, Debug)]
+pub enum UnOp {
+    Delete,
+    Void,
+    TypeOf,
+    PlusPlus,
+    MinusMinus,
+    Plus,
+    Minus,
+    Tilde,
+    Not,
 }
 
 #[derive(Copy, Debug)]

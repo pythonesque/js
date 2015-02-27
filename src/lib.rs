@@ -6,7 +6,7 @@ extern crate unicode;
 use arena::TypedArena;
 
 use ast::{Annotation, AssignOp, BindingElement, BinOp, Block, finish, Identifier,
-          Property, PropertyDefinition, Statement};
+          Property, PropertyDefinition, Statement, UnOp};
 use ast::Annotated as A;
 use ast::BlockNode as BN;
 use ast::BindingElementNode as BEN;
@@ -151,6 +151,9 @@ pub enum Error<'a> {
     StrictLHSAssignment(Token<'a>),
     InvalidLHSInArgument,
     IllegalReturn,
+    StrictLHSPrefix,
+    InvalidLHSInAssignment,
+    StrictDelete,
 }
 
 impl<'a> FromError<ParseFloatError> for Error<'a> {
@@ -375,6 +378,24 @@ fn binop<'a>(tok: &Token<'a>, allow_in: bool) -> Option<(BinOp, Prec)> {
         T::LtLt => (LtLt, 8), T::GtGt => (GtGt, 8), T::GtGtGt => (GtGtGt, 8),
         T::Plus => (Plus, 9), T::Minus => (Minus, 9),
         T::Times => (Times, 11), T::Div => (Div, 11), T::Mod => (Mod, 11),
+
+        _ => return None
+    })
+}
+
+fn unop<'a>(tok: &Token<'a>) -> Option<UnOp> {
+    use ast::UnOp::*;
+
+    Some(match tok.ty {
+        T::Delete => Delete,
+        T::Void => Void,
+        T::TypeOf => TypeOf,
+        T::PlusPlus => PlusPlus,
+        T::MinusMinus => MinusMinus,
+        T::Plus => Plus,
+        T::Minus => Minus,
+        T::Tilde => Tilde,
+        T::Not => Not,
 
         _ => return None
     })
@@ -1733,9 +1754,48 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
     // 11.4 Unary Operators
 
     fn parse_unary_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
-        let expr = self.parse_postfix_expression();
+        use ast::UnOp::*;
 
-        expr
+        match self.lookahead.as_ref().and_then(unop) {
+            Some(op @ PlusPlus) | Some(op @ MinusMinus) => {
+                let node = self.start();
+                try!(self.lex());
+                let expr = try!(self.parse_unary_expression());
+                // 11.4.4, 11.4.5
+                match expr {
+                    A(_, E::Identifier(i)) if self.strict && is_restricted_word(&i) => {
+                        // tolerate
+                        Err(Error::StrictLHSPrefix)
+                    },
+                    A(_, E::Identifier(_)) | A(_, E::Member(_)) => {
+                        Ok(finish(&node, self, E::Unary(op, Box::new(expr))))
+                    },
+                    _ => {
+                        // tolerate
+                        Err(Error::InvalidLHSInAssignment)
+                    }
+                }
+            },
+            Some(op @ Plus) | Some(op @ Minus) | Some(op @ Tilde) | Some(op @ Not) |
+            Some(op @ Void) | Some(op @ TypeOf) => {
+                let node = self.start();
+                try!(self.lex());
+                let expr = try!(self.parse_unary_expression());
+                Ok(finish(&node, self, E::Unary(op, Box::new(expr))))
+            },
+            Some(Delete) => {
+                let node = self.start();
+                try!(self.lex());
+                match try!(self.parse_unary_expression()) {
+                    A(_, E::Identifier(_)) if self.strict => {
+                        // tolerate
+                        Err(Error::StrictDelete)
+                    },
+                    expr => Ok(finish(&node, self, E::Unary(Delete, Box::new(expr))))
+                }
+            }
+            None => return self.parse_postfix_expression()
+        }
     }
 
     // 11.5 Multiplicative Operators
