@@ -6,7 +6,7 @@ extern crate unicode;
 use arena::TypedArena;
 
 use ast::{Annotation, AssignOp, BindingElement, BinOp, Block, finish, Identifier,
-          Property, PropertyDefinition, Statement, UnOp, UpdateOp, UpdateType};
+          Property, PropertyDefinition, RegExp, Statement, UnOp, UpdateOp, UpdateType};
 use ast::Annotated as A;
 use ast::BlockNode as BN;
 use ast::BindingElementNode as BEN;
@@ -77,8 +77,6 @@ pub struct Ctx<'a, Ann, Start>
 {
     source: &'a str,
     index: Pos,
-    byte_index: usize,
-    rest: &'a str,
     line_number: Pos,
     line_start: Pos,
 
@@ -96,6 +94,9 @@ pub struct Ctx<'a, Ann, Start>
     last_line_start: Option<Pos>,
     strict: bool,
 
+    rest: &'a str,
+    byte_index: usize,
+    start_byte_index: usize,
     root: &'a RootCtx,
     binop_stack: Vec<(BinOp, Prec, EN<'a, Ann>, Start)>,
 }
@@ -155,6 +156,7 @@ pub enum Error<'a> {
     InvalidLHSInAssignment,
     StrictDelete,
     StrictLHSPostfix,
+    UnterminatedRegExp,
 }
 
 impl<'a> FromError<ParseFloatError> for Error<'a> {
@@ -436,6 +438,155 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             None => Error::UnexpectedEOF,
         }
     }
+
+    fn skip_single_line_comment(&mut self, /*offset*/_: usize) {
+        //let start = self.index - offset;
+        //let loc =
+        while let Some((ch, rest)) = self.rest.slice_shift_char() {
+            self.index += 1;
+            self.byte_index = self.source.char_range_at(self.byte_index).next;
+            self.rest = rest;
+            if is_line_terminator(ch) {
+                self.has_line_terminator = true;
+                // if extra.comments ...
+                if ch == '\x0D' {
+                    if let Some(('\x0A', rest)) = self.rest.slice_shift_char() {
+                        self.index += 1;
+                        self.byte_index += 1;
+                        self.rest = rest;
+                    }
+                }
+                self.line_number += 1;
+                self.line_start = self.index;
+                return;
+            }
+        }
+
+        // if extra.comments ...
+    }
+
+    fn skip_multi_line_comment(&mut self) -> PRes<'a, ()> {
+        // if extra.comments ...
+
+        while let Some((ch, rest)) = self.rest.slice_shift_char() {
+            if is_line_terminator(ch) {
+                if ch == '\x0D' {
+                    match rest.slice_shift_char() {
+                        Some(('\x0A', rest_)) => {
+                            self.index += 1;
+                            self.byte_index += 1;
+                            self.rest = rest_;
+                        },
+                        _ => self.rest = rest
+                    }
+                } else { self.rest = rest }
+                self.has_line_terminator = true;
+                self.line_number += 1;
+                self.index += 1;
+                self.byte_index = self.source.char_range_at(self.byte_index).next;
+                self.line_start = self.index;
+            } else if ch == '*' {
+                // Block comment ends with '*/'.
+                if let Some(('/', rest)) = rest.slice_shift_char() {
+                    self.index += 2;
+                    self.byte_index += 2;
+                    self.rest = rest;
+                    // if extra.comments ...
+                    return Ok(());
+                }
+                self.index += 1;
+                self.byte_index += 1;
+                self.rest = rest;
+            } else {
+                self.index += 1;
+                self.byte_index = self.source.char_range_at(self.byte_index).next;
+                self.rest = rest;
+            }
+        }
+
+        Err(Error::UnexpectedEOF)
+    }
+
+    fn skip_comment(&mut self) -> PRes<'a, ()> {
+        self.has_line_terminator = false;
+
+        let mut start = self.index == 0;
+        while let Some((ch, rest)) = self.rest.slice_shift_char() {
+            if is_white_space(ch) {
+                self.index += 1;
+                self.byte_index = self.source.char_range_at(self.byte_index).next;
+                self.rest = rest;
+            } else if is_line_terminator(ch) {
+                self.has_line_terminator = true;
+                self.index += 1;
+                self.byte_index = self.source.char_range_at(self.byte_index).next;
+                self.rest = rest;
+                if ch == '\x0D' {
+                    if let Some(('\x0A', rest)) = self.rest.slice_shift_char() {
+                        self.rest = rest;
+                        self.index += 1;
+                        self.byte_index += 1;
+                    }
+                }
+                self.line_number += 1;
+                self.line_start = self.index;
+                start = true;
+            } else if ch == '/' {
+                match rest.slice_shift_char() {
+                    Some(('/', rest)) => {
+                        self.index += 2;
+                        self.byte_index += 2;
+                        self.rest = rest;
+                        self.skip_single_line_comment(2);
+                        start = true;
+                    },
+                    Some(('*', rest)) => {
+                        self.index += 2;
+                        self.byte_index += 2;
+                        self.rest = rest;
+                        try!(self.skip_multi_line_comment())
+                    },
+                    _ => break
+                }
+            } else if start && ch == '-' {
+                // U+003E is '>'
+                match rest.slice_shift_char() {
+                    Some(('\x2D', rest)) => match rest.slice_shift_char() {
+                        Some(('\x3E', rest)) => {
+                            // '-->' is a single-line comment
+                            self.index += 3;
+                            self.byte_index += 3;
+                            self.rest = rest;
+                            self.skip_single_line_comment(3);
+                        },
+                        _ => break
+                    },
+                    _ => break
+                }
+            } else if ch == '<' {
+                match rest.slice_shift_char() {
+                    Some(('!', rest)) => match rest.slice_shift_char() {
+                        Some(('-', rest)) => match rest.slice_shift_char() {
+                            Some(('-', rest)) => {
+                                self.index += 4;
+                                self.byte_index += 4;
+                                self.rest = rest;
+                                self.skip_single_line_comment(4);
+                            },
+                            _ => break
+                        },
+                        _ => break
+                    },
+                    _ => break
+                }
+            } else {
+                break
+            }
+        }
+
+        Ok(())
+    }
+
 
     fn scan_hex_escape(&mut self, prefix: ScanHex) -> PRes<'a, u16> {
         let len = match prefix {
@@ -1142,6 +1293,8 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         })
     }
 
+    // 7.8.4 String Literals
+
     fn scan_string_literal(&mut self, quote: char) -> PRes<'a, Token<'a>>
     {
         debug_assert!(quote == '"' || quote == '\'', r#"Quote character must be `'` or `"`."#);
@@ -1182,152 +1335,130 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         })
     }
 
-    fn skip_single_line_comment(&mut self, /*offset*/_: usize) {
-        //let start = self.index - offset;
-        //let loc =
+    fn scan_reg_exp_body(&mut self) -> PRes<'a, ()> {
+        // In theory, this shouldn't actually ever be false... I guess... I might go over the
+        // algorithm later to see if I can eliminate this.
+        let (ch, rest) = self.rest.slice_shift_char()
+                             .expect("Regular expression literal must start with a slash");
+        debug_assert!(ch == '/', "Regular expression literal must start with a slash");
+        self.index += 1;
+        self.byte_index += 1;
+        self.rest = rest;
+
+        let mut class_marker = false;
+        let mut terminated = false;
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
             self.index += 1;
             self.byte_index = self.source.char_range_at(self.byte_index).next;
             self.rest = rest;
-            if is_line_terminator(ch) {
-                self.has_line_terminator = true;
-                // if extra.comments ...
-                if ch == '\x0D' {
-                    if let Some(('\x0A', rest)) = self.rest.slice_shift_char() {
-                        self.index += 1;
-                        self.byte_index += 1;
-                        self.rest = rest;
-                    }
-                }
-                self.line_number += 1;
-                self.line_start = self.index;
-                return;
-            }
-        }
+            // add ch to str
 
-        // if extra.comments ...
-    }
-
-    fn skip_multi_line_comment(&mut self) -> PRes<'a, ()> {
-        // if extra.comments ...
-
-        while let Some((ch, rest)) = self.rest.slice_shift_char() {
-            if is_line_terminator(ch) {
-                if ch == '\x0D' {
-                    match rest.slice_shift_char() {
-                        Some(('\x0A', rest_)) => {
+            match ch {
+                '\\' => {
+                    match self.rest.slice_shift_char() {
+                        Some((ch, rest)) => {
+                            // In the Esprima version this actually gets incremented even in the
+                            // None state, but that seems like it would give bad error locations.
                             self.index += 1;
-                            self.byte_index += 1;
-                            self.rest = rest_;
+                            self.byte_index = self.source.char_range_at(self.byte_index).next;
+                            self.rest = rest;
+                            if is_line_terminator(ch) { return Err(Error::UnterminatedRegExp) }
+                            // add ch to str
                         },
-                        _ => self.rest = rest
+                        None => return Err(Error::UnterminatedRegExp)
                     }
-                } else { self.rest = rest }
-                self.has_line_terminator = true;
-                self.line_number += 1;
-                self.index += 1;
-                self.byte_index = self.source.char_range_at(self.byte_index).next;
-                self.line_start = self.index;
-            } else if ch == '*' {
-                // Block comment ends with '*/'.
-                if let Some(('/', rest)) = rest.slice_shift_char() {
-                    self.index += 2;
-                    self.byte_index += 2;
-                    self.rest = rest;
-                    // if extra.comments ...
-                    return Ok(());
-                }
-                self.index += 1;
-                self.byte_index += 1;
-                self.rest = rest;
-            } else {
-                self.index += 1;
-                self.byte_index = self.source.char_range_at(self.byte_index).next;
-                self.rest = rest;
+                },
+                ch if is_line_terminator(ch) => return Err(Error::UnterminatedRegExp),
+                ']' if class_marker => { class_marker = false },
+                '/' if !class_marker => { terminated = true; break },
+                '[' if !class_marker => { class_marker = true },
+                _ => {}
             }
         }
 
-        Err(Error::UnexpectedEOF)
+        if terminated {
+            //let body = ...
+            Ok(())
+        } else {
+            Err(Error::UnterminatedRegExp)
+        }
     }
 
-    fn skip_comment(&mut self) -> PRes<'a, ()> {
-        self.has_line_terminator = false;
-
-        let mut start = self.index == 0;
+    fn scan_reg_exp_flags(&mut self) -> PRes<'a, ()> {
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
-            if is_white_space(ch) {
-                self.index += 1;
-                self.byte_index = self.source.char_range_at(self.byte_index).next;
-                self.rest = rest;
-            } else if is_line_terminator(ch) {
-                self.has_line_terminator = true;
-                self.index += 1;
-                self.byte_index = self.source.char_range_at(self.byte_index).next;
-                self.rest = rest;
-                if ch == '\x0D' {
-                    if let Some(('\x0A', rest)) = self.rest.slice_shift_char() {
-                        self.rest = rest;
+            if !is_identifier_part(ch as u32) { break }
+
+            self.index += 1;
+            self.byte_index = self.source.char_range_at(self.byte_index).next;
+            self.rest = rest;
+            match ch {
+                '\\' => match self.rest.slice_shift_char() {
+                    Some(('u', rest)) => {
                         self.index += 1;
                         self.byte_index += 1;
-                    }
-                }
-                self.line_number += 1;
-                self.line_start = self.index;
-                start = true;
-            } else if ch == '/' {
-                match rest.slice_shift_char() {
-                    Some(('/', rest)) => {
-                        self.index += 2;
-                        self.byte_index += 2;
                         self.rest = rest;
-                        self.skip_single_line_comment(2);
-                        start = true;
-                    },
-                    Some(('*', rest)) => {
-                        self.index += 2;
-                        self.byte_index += 2;
-                        self.rest = rest;
-                        try!(self.skip_multi_line_comment())
-                    },
-                    _ => break
-                }
-            } else if start && ch == '-' {
-                // U+003E is '>'
-                match rest.slice_shift_char() {
-                    Some(('\x2D', rest)) => match rest.slice_shift_char() {
-                        Some(('\x3E', rest)) => {
-                            // '-->' is a single-line comment
-                            self.index += 3;
-                            self.byte_index += 3;
-                            self.rest = rest;
-                            self.skip_single_line_comment(3);
-                        },
-                        _ => break
-                    },
-                    _ => break
-                }
-            } else if ch == '<' {
-                match rest.slice_shift_char() {
-                    Some(('!', rest)) => match rest.slice_shift_char() {
-                        Some(('-', rest)) => match rest.slice_shift_char() {
-                            Some(('-', rest)) => {
-                                self.index += 4;
-                                self.byte_index += 4;
-                                self.rest = rest;
-                                self.skip_single_line_comment(4);
+                        let restore = self.index;
+                        let byte_restore = self.byte_index;
+                        match self.scan_hex_escape(ScanHex::U) {
+                            Ok(_c) => {
+                                // flags += ch
+                                // for str = '\\u'; restore < index; ++restore {
+                                //   str += source[restore]
+                                // }
                             },
-                            _ => break
-                        },
-                        _ => break
+                            _ => {
+                                self.index = restore;
+                                self.byte_index = byte_restore;
+                                self.rest = rest;
+                                // self.flags += 'u'
+                                // str += "\\u"
+                            }
+                        }
+                        // tolerate
+                        return Err(Error::UnexpectedChar(ch))
                     },
-                    _ => break
+                    Some((ch, _)) => {
+                        // str += '\\'
+                        // tolerate
+                        return Err(Error::UnexpectedChar(ch))
+                    },
+                    None => {
+                        // flags += ch
+                        // str += ch
+                    }
+                },
+                _ => {
+                    // flags += ch
+                    // str += ch
                 }
-            } else {
-                break
             }
         }
 
         Ok(())
+    }
+
+    fn scan_reg_exp(&mut self) -> PRes<'a, RegExp> {
+        self.scanning = true;
+
+        self.lookahead = None;
+        try!(self.skip_comment());
+        //let start = self.index;
+        //let byte_start = self.byte_index;
+
+        let _body = try!(self.scan_reg_exp_body());
+        let _flags = try!(self.scan_reg_exp_flags());
+        // let value = try!(self.test_reg_exp(body, flags));
+        self.scanning = false;
+        // if extra.tokenize ...
+
+        Ok(RegExp/* {
+            literal: body.literal + flags.literal,
+            value: value,
+            pattern: body,
+            flags: flags,
+            start: start,
+            end: self.index,
+        }*/)
     }
 
     fn advance(&mut self) -> PRes<'a, Token<'a>> {
@@ -1369,6 +1500,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         // let token = self.lookahead;
 
         self.start_index = self.index;
+        self.start_byte_index = self.byte_index;
         self.start_line_number = self.line_number;
         self.start_line_start = self.line_start;
 
@@ -1394,6 +1526,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         self.last_line_start = Some(self.line_start);
 
         self.start_index = self.index;
+        self.start_byte_index = self.byte_index;
         self.start_line_number = self.line_number;
         self.start_line_start = self.line_start;
 
@@ -1613,7 +1746,15 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 },
                 T::Function => return self.parse_function_expression(node),
                 // T::Class => return self.parse_class_expression(node),
-                // Div | DivEq => ... regexp ...
+                T::Div | T::DivEq => {
+                    self.index = self.start_index;
+                    self.byte_index = self.start_byte_index;
+                    self.rest = &self.source[self.byte_index..];
+                    // if extra.tokens ...
+                    let token = try!(self.scan_reg_exp());
+                    try!(self.lex());
+                    E::RegExp(token)
+                },
                 T::BooleanLiteral(b) => { try!(self.lex()); E::Bool(b) },
                 T::NullLiteral => { try!(self.lex()); E::Null },
                 _ => {
@@ -1839,7 +1980,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
     // 11.8 Relational Operators
     // 11.9 Equality Operators
     // 11.10 Binary Bitwise Operators
-    // 11.11 Binary Logical Operator s
+    // 11.11 Binary Logical Operators
 
     #[inline]
     fn shift_reduce_binary_expression(&mut self,
@@ -2547,7 +2688,7 @@ pub fn parse<'a, Ann, Start>(root: &'a RootCtx, code: &'a str, /*options*/_: &Op
 
         rest: source,
         byte_index: 0,
-
+        start_byte_index: 0,
         root: root,
         binop_stack: Vec::new(),
     };

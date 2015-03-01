@@ -54,6 +54,9 @@ pub struct Function<'a, Ann> {
     pub body: BlockNode<'a, Ann>,
 }
 
+#[derive(Debug)]
+pub struct RegExp;
+
 pub type PropertyNode<'a, Ann> = Annotated<Ann, Property<'a, Ann>>;
 #[derive(Debug)]
 pub enum Property<'a, Ann> {
@@ -94,6 +97,7 @@ pub enum Expression<'a, Ann> {
     Unary(UnOp, Box<ExpressionNode<'a, Ann>>),
     Update(UpdateOp, UpdateType, Box<ExpressionNode<'a, Ann>>),
     Seq(Vec<ExpressionNode<'a, Ann>>),
+    RegExp(RegExp),
 }
 
 pub type BlockNode<'a, Ann> = Annotated<Ann, Block<'a, Ann>>;

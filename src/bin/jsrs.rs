@@ -13,18 +13,12 @@ use std::thread;
 
 type Res<'a> = js::PRes<'a, js::ast::ScriptNode<'a, ()>>;
 
-pub struct Data<'a>(js::RootCtx, String, Option<Res<'a>>);
+struct Data<'a>(js::RootCtx, String, Option<Res<'a>>);
 
 unsafe impl<'a> Send for Data<'a> {}
 
-pub struct Options {
+struct Options {
     ast: bool,
-}
-
-#[derive(Debug)]
-pub enum Error {
-    Io(old_io::IoError),
-    Recv(mpsc::RecvError)
 }
 
 fn parse<'a, I>(_: &Options, mut input: I, data: &'a mut Option<Data>) -> IoResult<()>
