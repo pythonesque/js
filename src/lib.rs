@@ -175,6 +175,7 @@ pub enum Error<'a> {
     StrictLHSPostfix,
     UnterminatedRegExp,
     InvalidLHSInForIn,
+    NewlineAfterThrow,
 }
 
 impl<'a> FromError<ParseFloatError> for Error<'a> {
@@ -2461,6 +2462,20 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         return Ok(finish(&node, self, Statement::Return(argument)));
     }
 
+    // 12.13. The throw statement
+
+    fn parse_throw_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+        expect!(self, T::Throw);
+
+        if self.has_line_terminator { return Err(Error::NewlineAfterThrow) }
+
+        let argument = try!(self.parse_expression());
+
+        try!(self.consume_semicolon());
+
+        Ok(finish(&node, self, Statement::Throw(argument)))
+    }
+
     fn parse_statement(&mut self) -> PRes<'a, SN<'a, Ann>> {
         let node = self.start();
         match self.lookahead {
@@ -2479,7 +2494,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             tk!(T::If) => self.parse_if_statement(node),
             tk!(T::Return) => self.parse_return_statement(node),
             //tk!(T::Switch) => self.parse_switch_statement(node),
-            //tk!(T::Throw) => self.parse_throw_statement(node),
+            tk!(T::Throw) => self.parse_throw_statement(node),
             //tk!(T::Try) => self.parse_try_statement(node),
             tk!(T::Var) => self.parse_variable_statement(node),
             //tk!(T::While) => self.parse_while_statement(node),

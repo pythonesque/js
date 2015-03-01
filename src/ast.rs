@@ -131,7 +131,8 @@ pub enum Statement<'a, Ann> {
     ForExp(Option<ExpressionNode<'a, Ann>>, Option<ExpressionNode<'a, Ann>>,
         Option<ExpressionNode<'a, Ann>>, Box<StatementNode<'a, Ann>>),
     ForIn(VariableDeclarationNode<'a, Ann>, ExpressionNode<'a, Ann>, Box<StatementNode<'a, Ann>>),
-    ForExpIn(ExpressionNode<'a, Ann>, ExpressionNode<'a, Ann>, Box<StatementNode<'a, Ann>>), 
+    ForExpIn(ExpressionNode<'a, Ann>, ExpressionNode<'a, Ann>, Box<StatementNode<'a, Ann>>),
+    Throw(ExpressionNode<'a, Ann>),
 }
 
 pub type StatementListItemNode<'a, Ann> = Annotated<Ann, StatementListItem<'a, Ann>>;
