@@ -5,8 +5,24 @@ extern crate unicode;
 
 use arena::TypedArena;
 
-use ast::{Annotation, AssignOp, BindingElement, BinOp, Block, finish, Identifier,
-          Property, PropertyDefinition, RegExp, Statement, UnOp, UpdateOp, UpdateType};
+use ast::{
+    Annotation,
+    AssignOp,
+    BindingElement,
+    BinOp,
+    Block,
+    finish,
+    Identifier,
+    Property,
+    PropertyDefinition,
+    RegExp,
+    Statement,
+    UnOp,
+    UpdateOp,
+    UpdateType,
+    VariableDeclaration,
+    VariableDeclarationKind,
+};
 use ast::Annotated as A;
 use ast::BlockNode as BN;
 use ast::BindingElementNode as BEN;
@@ -21,6 +37,7 @@ use ast::StatementListItem as SLI;
 use ast::StatementListItemNode as SLIN;
 use ast::StatementNode as SN;
 use ast::Tok as T;
+use ast::VariableDeclarationNode as VDN;
 
 use std::char;
 use std::collections::HashSet;
@@ -157,6 +174,7 @@ pub enum Error<'a> {
     StrictDelete,
     StrictLHSPostfix,
     UnterminatedRegExp,
+    InvalidLHSInForIn,
 }
 
 impl<'a> FromError<ParseFloatError> for Error<'a> {
@@ -414,6 +432,11 @@ fn updateop<'a>(tok: &Token<'a>) -> Option<UpdateOp> {
 }
 
 enum ScanHex { U, X }
+
+enum InitFor<'a, Ann> {
+    Var(VDN<'a, Ann>),
+    Exp(EN<'a, Ann>),
+}
 
 impl<'a> Annotation for () {
     type Ctx = Ctx<'a, (), ()>;
@@ -2275,6 +2298,141 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         Ok(finish(&node, self, Statement::If(test, Box::new(consequent), alternate)))
     }
 
+    // 12.6 Iteration Statements
+
+    fn parse_for_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+        let previous_allow_in = self.state.allow_in;
+        let mut inexp = None;
+
+        let mut init = None;
+        let mut test = None;
+        let mut update = None;
+
+        expect!(self, T::For);
+
+        expect!(self, T::LParen);
+
+        match self.lookahead {
+            tk!(T::Semi) => try!(self.lex()),
+            tk!(T::Var) => {
+                let init_ = self.start();
+                try!(self.lex());
+
+                self.state.allow_in = false;
+                let declarations = try!(self.parse_variable_declaration_list());
+                let init_ = finish(&init_, self, VariableDeclaration {
+                    declarations: declarations,
+                    kind: VariableDeclarationKind::Var
+                });
+                // NOTE: Should we make sure this happens even if the above fails?
+                self.state.allow_in = previous_allow_in;
+
+                match self.lookahead {
+                    tk!(T::In) if init_.declarations.len() == 1 => {
+                        try!(self.lex());
+                        let right = try!(self.parse_expression());
+                        inexp = Some((InitFor::Var(init_), right));
+                    },
+                    _ => {
+                        init = Some(InitFor::Var(init_));
+                        expect!(self, T::Semi);
+                    }
+                }
+            },
+            /*tk!(op @ T::Const) | tk!(op @ T::Let) => {
+                let init_ = self.start();
+                try!(lex());
+                let kind = if op == T::Const {
+                    VariableDeclarationKind::Const
+                } else {
+                    VariableDeclarationKind::Let
+                };
+
+                self.state.allow_in = false;
+                let declarations = try!(self.parse_binding_list());
+                // NOTE: Should we make sure this happens even if the above fails?
+                self.state.allow_in = previous_allow_in;
+
+                match self.lookahead {
+                    tk!(T::In) if declarations.len() == 1 => {
+                        let left = finish(&init_, self, VariableDeclaration {
+                            declarations: declarations,
+                            kind: kind,
+                        });
+                        try!(self.lex());
+                        let right = try!(self.parse_expression());
+                        inexp = Some((InitFor::Var(left), right));
+                    },
+                    _ => {
+                        try!(self.consume_semicolon());
+                        init = Some(InitFor::Var(finish(&init_, self, VariableDeclaration {
+                            declarations: declarations,
+                            kind: kind,
+                        })));
+                    }
+                }
+            },*/
+            _ => {
+                self.state.allow_in = false;
+                let init_ = try!(self.parse_expression());
+                self.state.allow_in = previous_allow_in;
+
+                match self.lookahead {
+                    tk!(T::In) => match init_ {
+                        A(_, E::Identifier(_)) | A(_, E::Member(_)) => {
+                            // NOTE: Should we make sure this happens even if the above fails?
+                            try!(self.lex());
+                            let left = init_;
+                            let right = try!(self.parse_expression());
+                            inexp = Some((InitFor::Exp(left), right));
+                        },
+                        _ => {
+                            // tolerate
+                            return Err(Error::InvalidLHSInForIn)
+                        }
+                    },
+                    _ => {
+                        expect!(self, T::Semi);
+                        init = Some(InitFor::Exp(init_));
+                        // NOTE: Should we make sure this happens even if the above fails?
+                    }
+                }
+            }
+        }
+
+        if let None = inexp {
+            if !tmatch!(self.lookahead, T::Semi) {
+                test = Some(try!(self.parse_expression()));
+            }
+            expect!(self, T::Semi);
+
+            if !tmatch!(self.lookahead, T::RParen) {
+                update = Some(try!(self.parse_expression()));
+            }
+        }
+
+        expect!(self, T::RParen);
+
+        let old_in_iteration = self.state.in_iteration;
+        self.state.in_iteration = true;
+
+        let body = try!(self.parse_statement());
+
+        // NOTE: Should we make sure this happens even if the above fails?
+        self.state.in_iteration = old_in_iteration;
+
+        Ok(finish(&node, self, match inexp {
+            Some((InitFor::Var(left), right)) => Statement::ForIn(left, right, Box::new(body)),
+            Some((InitFor::Exp(left), right)) => Statement::ForExpIn(left, right, Box::new(body)),
+            None => match init {
+                Some(InitFor::Var(init)) => Statement::For(init, test, update, Box::new(body)),
+                Some(InitFor::Exp(init)) =>
+                    Statement::ForExp(Some(init), test, update, Box::new(body)),
+                None => Statement::ForExp(None, test, update, Box::new(body))
+            }
+        }))
+    }
+
     // 12.9. The return statement
 
     fn parse_return_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
@@ -2316,7 +2474,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             //tk!(T::Continue) => self.parse_continue_statement(node),
             //tk!(T::Debugger) => self.parse_debugger_statement(node),
             //tk!(T::Do) => self.parse_do_while_statement(node),
-            //tk!(T::For) => self.parse_for_while_statement(node),
+            tk!(T::For) => self.parse_for_statement(node),
             //tk!(T::Function) => self.parse_function_statement(node),
             tk!(T::If) => self.parse_if_statement(node),
             tk!(T::Return) => self.parse_return_statement(node),

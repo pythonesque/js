@@ -46,6 +46,20 @@ pub enum BindingElement<'a, Ann> {
     Uninitialized(IdentifierNode<'a, Ann>),
 }
 
+pub type VariableDeclarationNode<'a, Ann> = Annotated<Ann, VariableDeclaration<'a, Ann>>;
+#[derive(Debug)]
+pub struct VariableDeclaration<'a, Ann> {
+    pub declarations: Vec<BindingElementNode<'a, Ann>>,
+    pub kind: VariableDeclarationKind,
+}
+
+#[derive(Debug)]
+pub enum VariableDeclarationKind {
+    Var,
+    //Const,
+    //Let,
+}
+
 #[derive(Debug)]
 pub struct Function<'a, Ann> {
     pub params: Vec<IdentifierNode<'a, Ann>>,
@@ -112,6 +126,12 @@ pub enum Statement<'a, Ann> {
     Expression(ExpressionNode<'a, Ann>),
     Return(Option<ExpressionNode<'a, Ann>>),
     If(ExpressionNode<'a, Ann>, Box<StatementNode<'a, Ann>>, Option<Box<StatementNode<'a, Ann>>>),
+    For(VariableDeclarationNode<'a, Ann>, Option<ExpressionNode<'a, Ann>>,
+        Option<ExpressionNode<'a, Ann>>, Box<StatementNode<'a, Ann>>),
+    ForExp(Option<ExpressionNode<'a, Ann>>, Option<ExpressionNode<'a, Ann>>,
+        Option<ExpressionNode<'a, Ann>>, Box<StatementNode<'a, Ann>>),
+    ForIn(VariableDeclarationNode<'a, Ann>, ExpressionNode<'a, Ann>, Box<StatementNode<'a, Ann>>),
+    ForExpIn(ExpressionNode<'a, Ann>, ExpressionNode<'a, Ann>, Box<StatementNode<'a, Ann>>), 
 }
 
 pub type StatementListItemNode<'a, Ann> = Annotated<Ann, StatementListItem<'a, Ann>>;
