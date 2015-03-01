@@ -6,7 +6,7 @@ extern crate unicode;
 use arena::TypedArena;
 
 use ast::{Annotation, AssignOp, BindingElement, BinOp, Block, finish, Identifier,
-          Property, PropertyDefinition, Statement, UnOp};
+          Property, PropertyDefinition, Statement, UnOp, UpdateOp, UpdateType};
 use ast::Annotated as A;
 use ast::BlockNode as BN;
 use ast::BindingElementNode as BEN;
@@ -154,6 +154,7 @@ pub enum Error<'a> {
     StrictLHSPrefix,
     InvalidLHSInAssignment,
     StrictDelete,
+    StrictLHSPostfix,
 }
 
 impl<'a> FromError<ParseFloatError> for Error<'a> {
@@ -390,12 +391,21 @@ fn unop<'a>(tok: &Token<'a>) -> Option<UnOp> {
         T::Delete => Delete,
         T::Void => Void,
         T::TypeOf => TypeOf,
-        T::PlusPlus => PlusPlus,
-        T::MinusMinus => MinusMinus,
         T::Plus => Plus,
         T::Minus => Minus,
         T::Tilde => Tilde,
         T::Not => Not,
+
+        _ => return None
+    })
+}
+
+fn updateop<'a>(tok: &Token<'a>) -> Option<UpdateOp> {
+    use ast::UpdateOp::*;
+
+    Some(match tok.ty {
+        T::PlusPlus => PlusPlus,
+        T::MinusMinus => MinusMinus,
 
         _ => return None
     })
@@ -1745,10 +1755,33 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         Ok(expr)
     }
 
-    fn parse_postfix_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
-        let expr = self.parse_left_hand_side_expression_allow_call();
+    // 11.3 Postfix Expressions
 
-        expr
+    fn parse_postfix_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
+        let node = self.start();
+
+        let expr = try!(self.parse_left_hand_side_expression_allow_call());
+
+        match self.lookahead.as_ref().and_then(updateop) {
+            Some(op) if !self.has_line_terminator => {
+                // 11.3.1, 11.3.2
+                match expr {
+                    A(_, E::Identifier(i)) if self.strict && is_restricted_word(&i) => {
+                        // tolerate
+                        Err(Error::StrictLHSPostfix)
+                    },
+                    A(_, E::Identifier(_)) | A(_, E::Member(_)) => {
+                        try!(self.lex());
+                        Ok(finish(&node, self, E::Update(op, UpdateType::Postfix, Box::new(expr))))
+                    },
+                    _ => {
+                        // tolerate
+                        Err(Error::InvalidLHSInAssignment)
+                    }
+                }
+            },
+            _ => Ok(expr)
+        }
     }
 
     // 11.4 Unary Operators
@@ -1757,25 +1790,6 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         use ast::UnOp::*;
 
         match self.lookahead.as_ref().and_then(unop) {
-            Some(op @ PlusPlus) | Some(op @ MinusMinus) => {
-                let node = self.start();
-                try!(self.lex());
-                let expr = try!(self.parse_unary_expression());
-                // 11.4.4, 11.4.5
-                match expr {
-                    A(_, E::Identifier(i)) if self.strict && is_restricted_word(&i) => {
-                        // tolerate
-                        Err(Error::StrictLHSPrefix)
-                    },
-                    A(_, E::Identifier(_)) | A(_, E::Member(_)) => {
-                        Ok(finish(&node, self, E::Unary(op, Box::new(expr))))
-                    },
-                    _ => {
-                        // tolerate
-                        Err(Error::InvalidLHSInAssignment)
-                    }
-                }
-            },
             Some(op @ Plus) | Some(op @ Minus) | Some(op @ Tilde) | Some(op @ Not) |
             Some(op @ Void) | Some(op @ TypeOf) => {
                 let node = self.start();
@@ -1793,8 +1807,29 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     },
                     expr => Ok(finish(&node, self, E::Unary(Delete, Box::new(expr))))
                 }
+            },
+            None => match self.lookahead.as_ref().and_then(updateop) {
+                Some(op) => {
+                    let node = self.start();
+                    try!(self.lex());
+                    let expr = try!(self.parse_unary_expression());
+                    // 11.4.4, 11.4.5
+                    match expr {
+                        A(_, E::Identifier(i)) if self.strict && is_restricted_word(&i) => {
+                            // tolerate
+                            Err(Error::StrictLHSPrefix)
+                        },
+                        A(_, E::Identifier(_)) | A(_, E::Member(_)) => {
+                            Ok(finish(&node, self, E::Update(op, UpdateType::Prefix, Box::new(expr))))
+                        },
+                        _ => {
+                            // tolerate
+                            Err(Error::InvalidLHSInAssignment)
+                        }
+                    }
+                },
+                None => self.parse_postfix_expression()
             }
-            None => return self.parse_postfix_expression()
         }
     }
 
