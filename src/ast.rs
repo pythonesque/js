@@ -93,6 +93,7 @@ pub enum Expression<'a, Ann> {
     Conditional(Box<(ExpressionNode<'a, Ann>, ExpressionNode<'a, Ann>, ExpressionNode<'a, Ann>)>),
     Unary(UnOp, Box<ExpressionNode<'a, Ann>>),
     Update(UpdateOp, UpdateType, Box<ExpressionNode<'a, Ann>>),
+    Seq(Vec<ExpressionNode<'a, Ann>>),
 }
 
 pub type BlockNode<'a, Ann> = Annotated<Ann, Block<'a, Ann>>;

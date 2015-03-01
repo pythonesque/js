@@ -1982,10 +1982,31 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         }
     }
 
-    fn parse_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
-        let expr = self.parse_assignment_expression();
+    // 11.14 Comma Operator
 
-        expr
+    fn parse_expression(&mut self) -> PRes<'a, EN<'a, Ann>> {
+        let node = self.start();
+
+        let expr = try!(self.parse_assignment_expression());
+
+        match self.lookahead {
+            tk!(T::Comma) => {
+                let mut expressions = vec![expr];
+
+                while let Some(tok) = self.lookahead {
+                    match tok.ty {
+                        T::Comma => {
+                            try!(self.lex());
+                            expressions.push(try!(self.parse_assignment_expression()));
+                        }
+                        _ => break
+                    }
+                }
+
+                Ok(finish(&node, self, E::Seq(expressions)))
+            },
+            _ => Ok(expr)
+        }
     }
 
     fn parse_statement_list(&mut self) -> PRes<'a, Block<'a, Ann>> {
