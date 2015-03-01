@@ -17,6 +17,8 @@ use ast::{
     PropertyDefinition,
     RegExp,
     Statement,
+    SwitchCase,
+    SwitchCaseTest,
     UnOp,
     UpdateOp,
     UpdateType,
@@ -36,6 +38,7 @@ use ast::ScriptNode as ScriptN;
 use ast::StatementListItem as SLI;
 use ast::StatementListItemNode as SLIN;
 use ast::StatementNode as SN;
+use ast::SwitchCaseNode as SCN;
 use ast::Tok as T;
 use ast::VariableDeclarationNode as VDN;
 
@@ -176,6 +179,7 @@ pub enum Error<'a> {
     UnterminatedRegExp,
     InvalidLHSInForIn,
     NewlineAfterThrow,
+    MultipleDefaultsInSwitch,
 }
 
 impl<'a> FromError<ParseFloatError> for Error<'a> {
@@ -2462,6 +2466,77 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         return Ok(finish(&node, self, Statement::Return(argument)));
     }
 
+    // 12.10. The switch statement
+
+    fn parse_switch_case(&mut self) -> PRes<'a, SCN<'a, Ann>> {
+        let mut consequent = Vec::new();
+        let node = self.start();
+
+        let test = match self.lookahead {
+            tk!(T::Default) => {
+                try!(self.lex());
+                SwitchCaseTest::Default
+            },
+            _ => {
+                expect!(self, T::Case);
+                SwitchCaseTest::Case(try!(self.parse_expression()))
+            }
+        };
+        expect!(self, T::Colon);
+
+        while let Some(tok) = self.lookahead {
+            match tok.ty {
+                T::RBrack | T::Default | T::Case => break,
+                _ => {
+                    let statement = try!(self.parse_statement_list_item());
+                    consequent.push(statement);
+                }
+            }
+        }
+
+        Ok(finish(&node, self, SwitchCase { test: test, consequent: consequent }))
+    }
+
+    fn parse_switch_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+        expect!(self, T::Switch);
+
+        expect!(self, T::LParen);
+
+        let discriminant = try!(self.parse_expression());
+
+        expect!(self, T::RParen);
+
+        expect!(self, T::LBrack);
+
+        let mut cases = Vec::new();
+
+        if let tk!(T::RBrack) = self.lookahead {
+            try!(self.lex());
+            return Ok(finish(&node, self, Statement::Switch(discriminant, cases)))
+        }
+
+        let old_in_switch = self.state.in_switch;
+        self.state.in_switch = true;
+        let mut default_found = false;
+
+        while let Some(tok) = self.lookahead {
+            if let T::RBrack = tok.ty { break }
+            let clause = try!(self.parse_switch_case());
+            if let SwitchCaseTest::Default = clause.test {
+                if default_found { return Err(Error::MultipleDefaultsInSwitch) }
+                default_found = true;
+            }
+            cases.push(clause);
+        }
+
+        // NOTE: Should we make sure this is done even if the above fails?
+        self.state.in_switch = old_in_switch;
+
+        expect!(self, T::RBrack);
+
+        Ok(finish(&node, self, Statement::Switch(discriminant, cases)))
+    }
+
     // 12.13. The throw statement
 
     fn parse_throw_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
@@ -2493,7 +2568,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             //tk!(T::Function) => self.parse_function_statement(node),
             tk!(T::If) => self.parse_if_statement(node),
             tk!(T::Return) => self.parse_return_statement(node),
-            //tk!(T::Switch) => self.parse_switch_statement(node),
+            tk!(T::Switch) => self.parse_switch_statement(node),
             tk!(T::Throw) => self.parse_throw_statement(node),
             //tk!(T::Try) => self.parse_try_statement(node),
             tk!(T::Var) => self.parse_variable_statement(node),

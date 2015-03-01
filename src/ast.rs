@@ -117,6 +117,19 @@ pub enum Expression<'a, Ann> {
 pub type BlockNode<'a, Ann> = Annotated<Ann, Block<'a, Ann>>;
 pub type Block<'a, Ann> = Vec<StatementListItemNode<'a, Ann>>;
 
+pub type SwitchCaseNode<'a, Ann> = Annotated<Ann, SwitchCase<'a, Ann>>;
+#[derive(Debug)]
+pub struct SwitchCase<'a, Ann> {
+    pub test: SwitchCaseTest<'a, Ann>,
+    pub consequent: Vec<StatementListItemNode<'a, Ann>>,
+}
+
+#[derive(Debug)]
+pub enum SwitchCaseTest<'a, Ann> {
+    Default,
+    Case(ExpressionNode<'a, Ann>),
+}
+
 pub type StatementNode<'a, Ann> = Annotated<Ann, Statement<'a, Ann>>;
 #[derive(Debug)]
 pub enum Statement<'a, Ann> {
@@ -133,6 +146,7 @@ pub enum Statement<'a, Ann> {
     ForIn(VariableDeclarationNode<'a, Ann>, ExpressionNode<'a, Ann>, Box<StatementNode<'a, Ann>>),
     ForExpIn(ExpressionNode<'a, Ann>, ExpressionNode<'a, Ann>, Box<StatementNode<'a, Ann>>),
     Throw(ExpressionNode<'a, Ann>),
+    Switch(ExpressionNode<'a, Ann>, Vec<SwitchCaseNode<'a, Ann>>),
 }
 
 pub type StatementListItemNode<'a, Ann> = Annotated<Ann, StatementListItem<'a, Ann>>;
