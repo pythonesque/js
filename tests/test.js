@@ -15,10 +15,12 @@ fun\u0063tion foo(x, y = function(x,rest) { bar }, ... foo) {"use strict";
     try {
       switch (x) {
         case 4: console.log("foo"); throw x;
+          break;
         default:
       }
     } catch(x) {
     } finally {
+      continue;
     }
   }
 }

@@ -45,7 +45,6 @@ use ast::Tok as T;
 use ast::VariableDeclarationNode as VDN;
 
 use std::char;
-use std::collections::HashSet;
 use std::error::FromError;
 use std::fmt;
 use std::mem;
@@ -82,7 +81,7 @@ macro_rules! tmatch {
 #[derive(Clone, Default)]
 struct State<'a> {
     allow_in: bool,
-    label_set: HashSet<&'a str>,
+    label_set: Vec<&'a str>,
     parenthesis_count: Pos,
     in_function_body: bool,
     in_iteration: bool,
@@ -184,6 +183,9 @@ pub enum Error<'a> {
     MultipleDefaultsInSwitch,
     StrictCatchVariable,
     NoCatchOrFinally,
+    IllegalBreak,
+    UnknownLabel(Token<'a>),
+    IllegalContinue,
 }
 
 impl<'a> FromError<ParseFloatError> for Error<'a> {
@@ -2486,6 +2488,81 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         }))
     }
 
+    // 12.7 The continue statement
+
+    fn parse_continue_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+        expect!(self, T::Continue);
+
+        // catch the very common case first: immediately a semicolon
+
+        if self.has_line_terminator {
+            if !self.state.in_iteration {
+                return Err(Error::IllegalContinue);
+            }
+
+            return Ok(finish(&node, self, Statement::Continue(None)))
+        }
+
+        let label = match self.lookahead {
+            Some(tok @ Token { ty: T::Identifier(_), .. }) => {
+                let label = try!(self.parse_variable_identifier());
+
+                // Guess: the vector is small enough that scanning through it is probably faster than
+                // maintaining the hash.  If wrong, we can do it differently.
+                if self.state.label_set.iter().any( |l| *l == *label) {
+                    return Err(Error::UnknownLabel(tok));
+                }
+                Some(label)
+            },
+            _ => None
+        };
+
+        try!(self.consume_semicolon());
+
+        match label {
+            None if !self.state.in_iteration => Err(Error::IllegalContinue),
+            _ => Ok(finish(&node, self, Statement::Continue(label)))
+        }
+    }
+
+
+    // 12.8 The break statement
+
+    fn parse_break_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+        expect!(self, T::Break);
+
+        // catch the very common case first: immediately a semicolon
+
+        if self.has_line_terminator {
+            if !(self.state.in_iteration || self.state.in_switch) {
+                return Err(Error::IllegalBreak);
+            }
+
+            return Ok(finish(&node, self, Statement::Break(None)))
+        }
+
+        let label = match self.lookahead {
+            Some(tok @ Token { ty: T::Identifier(_), .. }) => {
+                let label = try!(self.parse_variable_identifier());
+
+                // Guess: the vector is small enough that scanning through it is probably faster than
+                // maintaining the hash.  If wrong, we can do it differently.
+                if self.state.label_set.iter().any( |l| *l == *label) {
+                    return Err(Error::UnknownLabel(tok));
+                }
+                Some(label)
+            },
+            _ => None
+        };
+
+        try!(self.consume_semicolon());
+
+        match label {
+            None if !(self.state.in_iteration || self.state.in_switch) => Err(Error::IllegalBreak),
+            _ => Ok(finish(&node, self, Statement::Break(label)))
+        }
+    }
+
     // 12.9 The return statement
 
     fn parse_return_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
@@ -2665,8 +2742,8 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             },
             tk!(T::Semi) => self.parse_empty_statement(node),
             //tk!(T::LParen) => return self.parse_expression_statement(node),
-            //tk!(T::Break) => self.parse_break_statement(node),
-            //tk!(T::Continue) => self.parse_continue_statement(node),
+            tk!(T::Break) => self.parse_break_statement(node),
+            tk!(T::Continue) => self.parse_continue_statement(node),
             //tk!(T::Debugger) => self.parse_debugger_statement(node),
             tk!(T::Do) => self.parse_do_while_statement(node),
             tk!(T::For) => self.parse_for_statement(node),
@@ -2731,7 +2808,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         let old_state = mem::replace(&mut self.state, State {
             allow_in: allow_in,
-            label_set: HashSet::new(),
+            label_set: Vec::new(),
             parenthesis_count: 0,
             in_function_body: true,
             in_iteration: false,
@@ -3011,7 +3088,7 @@ pub fn parse<'a, Ann, Start>(root: &'a RootCtx, code: &'a str, /*options*/_: &Op
 
     let state = State {
         allow_in: true,
-        label_set: HashSet::new(),
+        label_set: Vec::new(),
         parenthesis_count: 0,
         in_function_body: false,
         in_iteration: false,
