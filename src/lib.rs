@@ -157,7 +157,6 @@ pub enum Error<'a> {
     ExpectedHex,
     InvalidUnicode(u32),
     UnexpectedEscape(u32),
-    ExpectedIdent,
     UnterminatedStringLiteral,
     UnexpectedEOF,
     ParseFloat(ParseFloatError),
@@ -739,7 +738,6 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 _ => break
             }
         }
-        if self.rest.len() == 0 { return Err(Error::ExpectedIdent) }
         Ok(&self.source[start_byte_index..self.byte_index])
     }
 
