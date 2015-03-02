@@ -11,6 +11,7 @@ use ast::{
     BindingElement,
     BinOp,
     Block,
+    CatchClause,
     finish,
     Identifier,
     Property,
@@ -28,6 +29,7 @@ use ast::{
 use ast::Annotated as A;
 use ast::BlockNode as BN;
 use ast::BindingElementNode as BEN;
+use ast::CatchClauseNode as CCN;
 use ast::Expression as E;
 use ast::ExpressionNode as EN;
 use ast::Function as F;
@@ -180,6 +182,8 @@ pub enum Error<'a> {
     InvalidLHSInForIn,
     NewlineAfterThrow,
     MultipleDefaultsInSwitch,
+    StrictCatchVariable,
+    NoCatchOrFinally,
 }
 
 impl<'a> FromError<ParseFloatError> for Error<'a> {
@@ -2438,7 +2442,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         }))
     }
 
-    // 12.9. The return statement
+    // 12.9 The return statement
 
     fn parse_return_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
         let mut argument = None;
@@ -2466,7 +2470,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         return Ok(finish(&node, self, Statement::Return(argument)));
     }
 
-    // 12.10. The switch statement
+    // 12.10 The switch statement
 
     fn parse_switch_case(&mut self) -> PRes<'a, SCN<'a, Ann>> {
         let mut consequent = Vec::new();
@@ -2537,7 +2541,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         Ok(finish(&node, self, Statement::Switch(discriminant, cases)))
     }
 
-    // 12.13. The throw statement
+    // 12.13 The throw statement
 
     fn parse_throw_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
         expect!(self, T::Throw);
@@ -2549,6 +2553,63 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         try!(self.consume_semicolon());
 
         Ok(finish(&node, self, Statement::Throw(argument)))
+    }
+
+    // 12.14 The try statement
+
+    fn parse_catch_clause(&mut self) -> PRes<'a, CCN<'a, Ann>> {
+        let node = self.start();
+
+        expect!(self, T::Catch);
+
+        expect!(self, T::LParen);
+        if let Some(tok @ Token { ty: T::RParen, .. }) = self.lookahead {
+            return Err(Error::UnexpectedToken(tok))
+        }
+
+        let param = try!(self.parse_variable_identifier());
+        // 12.14.1
+        if self.strict && is_restricted_word(&param) {
+            // tolerate
+            return Err(Error::StrictCatchVariable)
+        }
+
+        expect!(self, T::RParen);
+        let start = self.start();
+        let body = try!(self.parse_block());
+        let body = finish(&start, self, body);
+
+        Ok(finish(&node, self, CatchClause { param: param, body: body }))
+    }
+
+    fn parse_try_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+        expect!(self, T::Try);
+
+        let start = self.start();
+        let block = try!(self.parse_block());
+        let block = finish(&start, self, block);
+
+        let handler = match self.lookahead {
+            tk!(T::Catch) => Some(try!(self.parse_catch_clause())),
+            _ => None
+        };
+
+        let finalizer = match self.lookahead {
+            tk!(T::Finally) => {
+                try!(self.lex());
+                let start = self.start();
+                let finalizer = try!(self.parse_block());
+
+                Some(finish(&start, self, finalizer))
+            },
+            _ => None
+        };
+
+        match (handler, finalizer) {
+            (None, None) => Err(Error::NoCatchOrFinally),
+            (handler, finalizer) =>
+                Ok(finish(&node, self, Statement::Try(block, handler, finalizer)))
+        }
     }
 
     fn parse_statement(&mut self) -> PRes<'a, SN<'a, Ann>> {
@@ -2570,7 +2631,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             tk!(T::Return) => self.parse_return_statement(node),
             tk!(T::Switch) => self.parse_switch_statement(node),
             tk!(T::Throw) => self.parse_throw_statement(node),
-            //tk!(T::Try) => self.parse_try_statement(node),
+            tk!(T::Try) => self.parse_try_statement(node),
             tk!(T::Var) => self.parse_variable_statement(node),
             //tk!(T::While) => self.parse_while_statement(node),
             //tk!(T::With) => self.parse_with_statement(node),

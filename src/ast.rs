@@ -130,6 +130,13 @@ pub enum SwitchCaseTest<'a, Ann> {
     Case(ExpressionNode<'a, Ann>),
 }
 
+pub type CatchClauseNode<'a, Ann> = Annotated<Ann, CatchClause<'a, Ann>>;
+#[derive(Debug)]
+pub struct CatchClause<'a, Ann> {
+    pub param: IdentifierNode<'a, Ann>,
+    pub body: BlockNode<'a, Ann>,
+}
+
 pub type StatementNode<'a, Ann> = Annotated<Ann, Statement<'a, Ann>>;
 #[derive(Debug)]
 pub enum Statement<'a, Ann> {
@@ -147,6 +154,7 @@ pub enum Statement<'a, Ann> {
     ForExpIn(ExpressionNode<'a, Ann>, ExpressionNode<'a, Ann>, Box<StatementNode<'a, Ann>>),
     Throw(ExpressionNode<'a, Ann>),
     Switch(ExpressionNode<'a, Ann>, Vec<SwitchCaseNode<'a, Ann>>),
+    Try(BlockNode<'a, Ann>, Option<CatchClauseNode<'a, Ann>>, Option<BlockNode<'a, Ann>>),
 }
 
 pub type StatementListItemNode<'a, Ann> = Annotated<Ann, StatementListItem<'a, Ann>>;

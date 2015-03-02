@@ -9,9 +9,13 @@ fun\u0063tion foo(x, y = function(x,rest) { bar }, ... foo) {"use strict";
   {
   3 } ; ++x * 4 ; 5 + 6 * 7 % 8 >>> typeof 5 - 4 + 3 ; z++, true + /foo?/g; var z = { x: new 3, y: 5 }; return z[x] = 1 ? 2 : 3;
   for (x in [1,2,3]) {
-    switch (x) {
-      case 4: console.log("foo"); throw x;
-      default:
+    try {
+      switch (x) {
+        case 4: console.log("foo"); throw x;
+        default:
+      }
+    } catch(x) {
+    } finally {
     }
   }
 }
