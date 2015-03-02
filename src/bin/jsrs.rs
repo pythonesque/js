@@ -129,7 +129,7 @@ fn display<'a, O, Ann, Start>(options: &Options, path: Option<&Path>,
                 writeln!(output, "{:?}", result.as_ref().err())
             }.and(Ok(Ok(result.as_ref().and(Ok(())))))
         },
-        Err(e) => writeln!(output, "Error parsing input data!  {:?}", e).and(Err(e))
+        Err(e) => writeln!(output, "Error parsing input data!  {:?}", e).and(Ok(Err(e)))
     }
 }
 
