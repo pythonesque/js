@@ -7,6 +7,7 @@ extern crate libc;
 use getopts::{optflag,getopts,OptGroup};
 use js::ast::Annotation;
 use std::cmp;
+use std::env;
 use std::fmt;
 use std::old_io::{self, IoResult, Reader, Writer};
 use std::old_io::fs::File;
@@ -103,8 +104,8 @@ fn parse<'a, I, Ann, Start>(_: &Options,
 }
 
 fn display<'a, O, Ann, Start>(options: &Options, path: Option<&Path>,
-                              data: IoResult<&Option<Data<'a, Ann>>>, output: &mut O
-                             ) -> IoResult<()>
+                              data: IoResult<&'a Option<Data<'a, Ann>>>, output: &mut O
+                             ) -> IoResult<IoResult<Result<(), &'a js::Error<'a>>>>
     where O: Writer,
           Ann: 'a,
           Ann: fmt::Debug,
@@ -126,9 +127,9 @@ fn display<'a, O, Ann, Start>(options: &Options, path: Option<&Path>,
                 writeln!(output, "{:?}", result)
             } else {
                 writeln!(output, "{:?}", result.as_ref().err())
-            }
+            }.and(Ok(Ok(result.as_ref().and(Ok(())))))
         },
-        Err(e) => writeln!(output, "Error parsing input data!  {:?}", e)
+        Err(e) => writeln!(output, "Error parsing input data!  {:?}", e).and(Err(e))
     }
 }
 
@@ -152,7 +153,13 @@ fn run<Ann, Start>(options: &Options, matches: &getopts::Matches)
         let mut data = None;
         let stdin = old_io::stdin();
         parse::<_, Ann, Start>(options, stdin, &mut data).unwrap();
-        display(options, None, Ok(&data), output).unwrap();
+        match display(options, None, Ok(&data), output) {
+            Ok(r) => match r {
+                Ok(r) => if let Err(_) = r { env::set_exit_status(1) },
+                Err(_) => env::set_exit_status(2),
+            },
+            Err(_) => env::set_exit_status(3),
+        }
     } else {
         let (tx, rx) = mpsc::channel();
         let _join_guards = initial
@@ -168,22 +175,33 @@ fn run<Ann, Start>(options: &Options, matches: &getopts::Matches)
                 } )
             } ).collect::<Vec<_>>();
         drop(tx);
-        if let Err(e) = thread::scoped( move || {
+        match thread::scoped( move || {
                 rx.iter()
                     .map( |(path, data)| display(options, Some(path), data.map( |&mut ref x| x), output) )
                     .collect::<IoResult<Vec<_>>>()
             } ).join() {
-            writeln!(error, "There was an error executing the display task!  {:?}", e).unwrap()
+            Ok(v) => {
+                match v.into_iter().collect::<IoResult<Vec<_>>>() {
+                    Ok(v) => if let Err(_) = v.into_iter().collect::<Result<Vec<()>, &js::Error>>() {
+                        env::set_exit_status(1);
+                    },
+                    Err(_) => env::set_exit_status(2)
+                }
+            }
+            Err(e) => {
+                writeln!(error, "There was an error executing the display task!  {:?}", e).unwrap();
+                env::set_exit_status(3);
+            }
         }
     }
     // We do this to avoid wasting time calling destructors, since the program is done anyway.
     if !options.run_destructors {
-        unsafe { libc::exit(0 as libc::c_int); }
+        unsafe { libc::exit(env::get_exit_status() as libc::c_int); }
     }
 }
 
 pub fn main() {
-    let mut args = std::env::args();
+    let mut args = env::args();
 
     let program = args.next().unwrap();
 
