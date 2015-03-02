@@ -2309,6 +2309,50 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
     // 12.6 Iteration Statements
 
+    fn parse_do_while_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+        expect!(self, T::Do);
+
+        let old_in_iteration = self.state.in_iteration;
+        self.state.in_iteration = true;
+
+        let body = try!(self.parse_statement());
+
+        // NOTE: Should this be done even if the above fails?
+        self.state.in_iteration = old_in_iteration;
+
+        expect!(self, T::While);
+
+        expect!(self, T::LParen);
+
+        let test = try!(self.parse_expression());
+
+        expect!(self, T::RParen);
+
+        if let tk!(T::Semi) = self.lookahead { try!(self.lex()); }
+
+        Ok(finish(&node, self, Statement::DoWhile(Box::new(body), test)))
+    }
+
+    fn parse_while_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+        expect!(self, T::While);
+
+        expect!(self, T::LParen);
+
+        let test = try!(self.parse_expression());
+
+        expect!(self, T::RParen);
+
+        let old_in_iteration = self.state.in_iteration;
+        self.state.in_iteration = true;
+
+        let body = try!(self.parse_statement());
+
+        // NOTE: Should this be done even if the above fails?
+        self.state.in_iteration = old_in_iteration;
+
+        Ok(finish(&node, self, Statement::While(test, Box::new(body))))
+    }
+
     fn parse_for_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
         let previous_allow_in = self.state.allow_in;
         let mut inexp = None;
@@ -2624,7 +2668,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             //tk!(T::Break) => self.parse_break_statement(node),
             //tk!(T::Continue) => self.parse_continue_statement(node),
             //tk!(T::Debugger) => self.parse_debugger_statement(node),
-            //tk!(T::Do) => self.parse_do_while_statement(node),
+            tk!(T::Do) => self.parse_do_while_statement(node),
             tk!(T::For) => self.parse_for_statement(node),
             //tk!(T::Function) => self.parse_function_statement(node),
             tk!(T::If) => self.parse_if_statement(node),
@@ -2633,7 +2677,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             tk!(T::Throw) => self.parse_throw_statement(node),
             tk!(T::Try) => self.parse_try_statement(node),
             tk!(T::Var) => self.parse_variable_statement(node),
-            //tk!(T::While) => self.parse_while_statement(node),
+            tk!(T::While) => self.parse_while_statement(node),
             //tk!(T::With) => self.parse_with_statement(node),
             //Some(_) => {
             _ => {

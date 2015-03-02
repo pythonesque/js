@@ -155,6 +155,8 @@ pub enum Statement<'a, Ann> {
     Throw(ExpressionNode<'a, Ann>),
     Switch(ExpressionNode<'a, Ann>, Vec<SwitchCaseNode<'a, Ann>>),
     Try(BlockNode<'a, Ann>, Option<CatchClauseNode<'a, Ann>>, Option<BlockNode<'a, Ann>>),
+    While(ExpressionNode<'a, Ann>, Box<StatementNode<'a, Ann>>),
+    DoWhile(Box<StatementNode<'a, Ann>>, ExpressionNode<'a, Ann>),
 }
 
 pub type StatementListItemNode<'a, Ann> = Annotated<Ann, StatementListItem<'a, Ann>>;
