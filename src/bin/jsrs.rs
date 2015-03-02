@@ -83,6 +83,7 @@ struct Options {
     ast: bool,
     annotate: bool,
     run_destructors: bool,
+    only_errors: bool,
 }
 
 fn parse<'a, I, Ann, Start>(_: &Options,
@@ -111,11 +112,6 @@ fn display<'a, O, Ann, Start>(options: &Options, path: Option<&Path>,
           Ann: fmt::Debug,
           Ann: Annotation<Ctx=js::Ctx<'a, Ann, Start>, Start=Start>,
 {
-    try!(match path {
-        Some(path) => write!(output, "{}: ", path.display()),
-        None => write!(output, "<stdin>: ", )
-    });
-
     match data {
         Ok(ref data) => {
             // Note: if the file was encoded successfully, it shouldn't be possible for the result
@@ -123,13 +119,27 @@ fn display<'a, O, Ann, Start>(options: &Options, path: Option<&Path>,
             // should have already killed the display thread.
             let Data(_, _, ref result) = *data.as_ref().unwrap();
             let result = result.as_ref().unwrap();
-            if options.ast {
-                writeln!(output, "{:?}", result)
+            if !options.only_errors || result.is_err() {
+                try!(match path {
+                    Some(path) => write!(output, "{}: ", path.display()),
+                    None => write!(output, "<stdin>: ", )
+                });
+                if options.ast {
+                    writeln!(output, "{:?}", result)
+                } else {
+                    writeln!(output, "{:?}", result.as_ref().err())
+                }.and(Ok(Ok(result.as_ref().and(Ok(())))))
             } else {
-                writeln!(output, "{:?}", result.as_ref().err())
-            }.and(Ok(Ok(result.as_ref().and(Ok(())))))
+                Ok(Ok(Ok(())))
+            }
         },
-        Err(e) => writeln!(output, "Error parsing input data!  {:?}", e).and(Ok(Err(e)))
+        Err(e) => {
+            try!(match path {
+                Some(path) => write!(output, "{}: ", path.display()),
+                None => write!(output, "<stdin>: ", )
+            });
+            writeln!(output, "Error parsing input data!  {:?}", e).and(Ok(Err(e)))
+        }
     }
 }
 
@@ -208,6 +218,7 @@ pub fn main() {
     let opts = [
         optflag("h", "help", "print this help menu"),
         optflag("", "ast", "print the successfully parsed AST"),
+        optflag("", "only-errors", "Only display entries if there was an error"),
         optflag("", "annotate", "annotate each AST token"),
         optflag("", "run-destructors", "run destructors on exit (e.g. for use with Valgrind)")
     ];
@@ -219,6 +230,7 @@ pub fn main() {
         ast: matches.opt_present("ast"),
         annotate: matches.opt_present("annotate"),
         run_destructors: matches.opt_present("run-destructors"),
+        only_errors: matches.opt_present("only-errors"),
     };
     if matches.opt_present("h") {
         print_usage(&*program, &opts);
