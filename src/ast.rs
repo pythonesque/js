@@ -159,6 +159,7 @@ pub enum Statement<'a, Ann> {
     DoWhile(Box<StatementNode<'a, Ann>>, ExpressionNode<'a, Ann>),
     Break(Option<IdentifierNode<'a, Ann>>),
     Continue(Option<IdentifierNode<'a, Ann>>),
+    Labeled(ExpressionNode<'a, Ann>, Box<StatementNode<'a, Ann>>),
 }
 
 pub type StatementListItemNode<'a, Ann> = Annotated<Ann, StatementListItem<'a, Ann>>;

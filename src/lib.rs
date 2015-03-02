@@ -186,6 +186,7 @@ pub enum Error<'a> {
     IllegalBreak,
     UnknownLabel(Token<'a>),
     IllegalContinue,
+    LabelRedeclaration(Token<'a>),
 }
 
 impl<'a> FromError<ParseFloatError> for Error<'a> {
@@ -2509,7 +2510,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
                 // Guess: the vector is small enough that scanning through it is probably faster than
                 // maintaining the hash.  If wrong, we can do it differently.
-                if self.state.label_set.iter().any( |l| *l == *label) {
+                if !self.state.label_set.iter().any( |l| *l == *label) {
                     return Err(Error::UnknownLabel(tok));
                 }
                 Some(label)
@@ -2547,7 +2548,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
                 // Guess: the vector is small enough that scanning through it is probably faster than
                 // maintaining the hash.  If wrong, we can do it differently.
-                if self.state.label_set.iter().any( |l| *l == *label) {
+                if !self.state.label_set.iter().any( |l| *l == *label) {
                     return Err(Error::UnknownLabel(tok));
                 }
                 Some(label)
@@ -2760,12 +2761,46 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             _ => {
                 let expr = try!(self.parse_expression());
 
-                try!(self.consume_semicolon());
+                // 12.12 Labelled Statements
+                match (expr, self.lookahead) {
+                    (A(ann, E::Identifier(name)), Some(tok @ Token { ty: T::Colon, .. })) => {
+                        try!(self.lex());
 
-                Ok(finish(&node, self, Statement::Expression(expr)))
+                        if self.state.label_set.iter().any( |l| *l == name) {
+                            return Err(Error::LabelRedeclaration(tok));
+                        }
+
+                        self.state.label_set.push(name);
+                        let labeled_body = self.parse_statement();
+                        // Make sure not to exit this function before removing state from the label
+                        // set!
+                        self.state.label_set.pop();
+                        let name = A(ann, E::Identifier(name));
+                        Ok(finish(&node, self,
+                                  Statement::Labeled(name, Box::new(try!(labeled_body)))))
+                    },
+                    (expr, _) => {
+                        try!(self.consume_semicolon());
+
+                        Ok(finish(&node, self, Statement::Expression(expr)))
+                    }
+                }
             },
             //None => Err(Error::UnexpectedEOF),
         }
+    }
+
+    #[inline]
+    fn parse_function_source_elements_to_end(&mut self, body: &mut Block<'a, Ann>) -> PRes<'a, ()> {
+        while let Some(token) = self.lookahead {
+            if let T::RBrack = token.ty { break }
+            let statement = try!(self.parse_statement_list_item());
+            body.push(statement);
+        }
+
+        expect!(self, T::RBrack);
+
+        Ok(())
     }
 
     fn parse_function_source_elements(&mut self) -> PRes<'a, BN<'a, Ann>> {
@@ -2816,20 +2851,18 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             last_comment_start: last_comment_start,
         });
 
-        while let Some(token) = self.lookahead {
-            if let T::RBrack = token.ty { break }
-            let statement = try!(self.parse_statement_list_item());
-            body.push(statement);
-        }
+        let res = self.parse_function_source_elements_to_end(&mut body);
 
-        expect!(self, T::RBrack);
-
-         self.state = State {
+        self.state = State {
             allow_in: self.state.allow_in,
             last_comment_start: self.state.last_comment_start,
 
             .. old_state
         };
+
+        // We don't try! res until this point, to make sure the old state is restored (this may or
+        // may not be a good thing...).
+        try!(res);
 
         return Ok(finish(&node, self, body));
     }
