@@ -101,18 +101,18 @@ pub struct Ctx<'a, Ann, Start>
     line_number: Pos,
     line_start: Pos,
 
-    start_index: Pos,
-    start_line_number: Pos,
-    start_line_start: Pos,
+    pub start_index: Pos,
+    pub start_line_number: Pos,
+    pub start_line_start: Pos,
     //length: usize,
     lookahead: Option<Token<'a>>,
     state: State<'a>,
 
     scanning: bool,
     has_line_terminator: bool,
-    last_index: Option<Pos>,
-    last_line_number: Option<Pos>,
-    last_line_start: Option<Pos>,
+    pub last_index: Option<Pos>,
+    pub last_line_number: Option<Pos>,
+    pub last_line_start: Option<Pos>,
     strict: bool,
 
     rest: &'a str,
@@ -445,11 +445,6 @@ fn updateop<'a>(tok: &Token<'a>) -> Option<UpdateOp> {
 
 enum ScanHex { U, X }
 
-enum InitFor<'a, Ann> {
-    Var(VDN<'a, Ann>),
-    Exp(EN<'a, Ann>),
-}
-
 impl<'a> Annotation for () {
     type Ctx = Ctx<'a, (), ()>;
     type Start = ();
@@ -464,7 +459,7 @@ impl<'a> Annotation for () {
 }
 
 impl<'a, Ann, Start> Ctx<'a, Ann, Start>
-    where Ann: Annotation<Ctx=Self, Start=Start>
+    where Ann: Annotation<Ctx=Self, Start=Start>,
 {
     #[cold] #[inline(never)]
     fn unexpected_char(&self, opt: Option<(char, &str)>) -> Error<'a> {
@@ -1586,8 +1581,14 @@ struct Params<'a, Ann> {
     first_restricted: Option<Error<'a>>,
 }
 
+enum InitFor<'a, Ann> {
+    Var(VDN<'a, Ann>),
+    Exp(EN<'a, Ann>),
+}
+
 impl<'a, Ann, Start> Ctx<'a, Ann, Start>
-    where Ann: Annotation<Ctx=Self, Start=Start>
+    where Ann: Annotation<Ctx=Self, Start=Start>,
+          //Ann: fmt::Debug,
 {
     #[cold] #[inline(never)]
     fn unexpected_token(&self, opt: Option<Token<'a>>) -> Error<'a> {
@@ -1607,7 +1608,8 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
     }
 
     fn consume_semicolon(&mut self) -> PRes<'a, ()> {
-        if Some(';') == self.rest.chars().next() { try!(self.lex()); return Ok(()) }
+        // Catch the common case first...
+        // if Some(';') == self.rest.chars().next() { try!(self.lex()); return Ok(()) }
         if let tk!(T::Semi) = self.lookahead { try!(self.lex()); return Ok(()) }
 
         if self.has_line_terminator { return Ok(()) }
@@ -2179,9 +2181,11 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     }
                 }
 
-                Ok(finish(&node, self, E::Seq(expressions)))
+                /*let res = */Ok(finish(&node, self, E::Seq(expressions)))/*;
+                println!("Parsed expression: {:?}", res);
+                res*/
             },
-            _ => Ok(expr)
+            _ => { /*println!("Parsed expression: {:?}", expr); */ Ok(expr) }
         }
     }
 
@@ -2583,7 +2587,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             return Ok(finish(&node, self, Statement::Return(None)));
         }
 
-        if !tmatch!(self.lookahead, T::Semi, T::RBrace) && self.lookahead.is_some() {
+        if !tmatch!(self.lookahead, T::Semi, T::RBrack) && self.lookahead.is_some() {
             argument = Some(try!(self.parse_expression()));
         }
 
@@ -2736,7 +2740,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
     fn parse_statement(&mut self) -> PRes<'a, SN<'a, Ann>> {
         let node = self.start();
-        match self.lookahead {
+        /*let stmt = */match self.lookahead {
             tk!(T::LBrack) => {
                 let body = try!(self.parse_block());
                 Ok(finish(&node, self, Statement::Block(body)))
@@ -2787,7 +2791,9 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 }
             },
             //None => Err(Error::UnexpectedEOF),
-        }
+        }/*;
+        println!("Parsed statement: {:?}", stmt);
+        stmt*/
     }
 
     #[inline]
@@ -3106,7 +3112,8 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
 
 pub fn parse<'a, Ann, Start>(root: &'a RootCtx, code: &'a str, /*options*/_: &Options) -> PRes<'a, ScriptN<'a, Ann>>
-        where Ann: Annotation<Ctx=Ctx<'a, Ann, Start>, Start=Start>
+        where Ann: Annotation<Ctx=Ctx<'a, Ann, Start>, Start=Start>,
+              //Ann: fmt::Debug,
     {
     let source = code;
     let index = 0;

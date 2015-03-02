@@ -1,6 +1,10 @@
 // Testing comments
 "use stri\143t";;;;
 
+notification = function() {
+  return BufferList()
+};
+
 function foo(x = "\143", x, arguments, y = function(x,rest) { "use strict"; bar }, ... foo) {
   var x = [true, false,, ]; x.y = 4; this.two.null.true
 }
