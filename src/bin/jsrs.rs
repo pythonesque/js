@@ -1,4 +1,4 @@
-#![feature(env, libc, rustc_private, old_io, old_path, os)]
+#![feature(exit_status, libc, rustc_private, old_io, old_path, os)]
 
 extern crate getopts;
 extern crate js;

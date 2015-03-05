@@ -834,7 +834,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                             },
                             Some(('=', rest_)) => {
                                 self.index += 2;
-                                    self.byte_index += 2;
+                                self.byte_index += 2;
                                 rest = rest_;
                                 GtGtEq
                             },
@@ -2736,6 +2736,16 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         }
     }
 
+    // 12.15 The debugger statement
+
+    fn parse_debugger_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+        expect!(self, T::Debugger);
+
+        try!(self.consume_semicolon());
+
+        Ok(finish(&node, self, Statement::Debugger))
+    }
+
     fn parse_statement(&mut self) -> PRes<'a, SN<'a, Ann>> {
         let node = self.start();
         /*let stmt = */match self.lookahead {
@@ -2747,7 +2757,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             //tk!(T::LParen) => return self.parse_expression_statement(node),
             tk!(T::Break) => self.parse_break_statement(node),
             tk!(T::Continue) => self.parse_continue_statement(node),
-            //tk!(T::Debugger) => self.parse_debugger_statement(node),
+            tk!(T::Debugger) => self.parse_debugger_statement(node),
             tk!(T::Do) => self.parse_do_while_statement(node),
             tk!(T::For) => self.parse_for_statement(node),
             //tk!(T::Function) => self.parse_function_statement(node),

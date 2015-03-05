@@ -160,6 +160,7 @@ pub enum Statement<'a, Ann> {
     Break(Option<IdentifierNode<'a, Ann>>),
     Continue(Option<IdentifierNode<'a, Ann>>),
     Labeled(ExpressionNode<'a, Ann>, Box<StatementNode<'a, Ann>>),
+    Debugger,
 }
 
 pub type StatementListItemNode<'a, Ann> = Annotated<Ann, StatementListItem<'a, Ann>>;

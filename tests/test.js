@@ -19,6 +19,7 @@ fun\u0063tion foo(x, y = function(x,rest) { bar }, ... foo) {"use strict";
     l: try {
       switch (x) {
         case 4: console.log("foo"); throw x;
+          debugger;
           break l;
         default:
       }
