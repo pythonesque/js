@@ -326,7 +326,6 @@ fn is_restricted_word(id: &str) -> bool {
 fn keyword<'a>(id: &str, strict: bool) -> Option<T<'a>> {
     use ast::Tok::*;
 
-    // if strict ...
     Some(match id {
         "if" => If, "in" => In, "do" => Do,
         "var" => Var, "for" => For, "new" => New, "try" => Try, "let" => Let,
@@ -346,6 +345,24 @@ fn keyword<'a>(id: &str, strict: bool) -> Option<T<'a>> {
         "static" if strict => Static,
         _ => return None
     })
+}
+
+fn is_keyword<'a>(tok: &Token<'a>) -> bool {
+    use ast::Tok::*;
+
+    match tok.ty {
+        If | In | Do |
+        Var | For | New | Try | Let |
+        This | Else | Case | Void | With | Enum |
+        While | Break | Catch | Throw | Const | Yield | Class | Super |
+        Return | TypeOf | Delete | Switch | Export | Import |
+        Default | Finally | Extends | Function | Continue | Debugger |
+        InstanceOf |
+
+        // Strict mode reserved words
+        Implements | Interface | Package | Private | Protected | Public | Static => true,
+        _ => false
+    }
 }
 
 fn assign_op<'a>(tok: &Token<'a>) -> Option<AssignOp> {
@@ -1651,7 +1668,40 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         Ok(finish(&node, self, E::Array(elements)))
     }
 
-    // 11.1.5 Object Initialiser
+    // 11.1.5 Object Initializer
+
+    fn parse_property_function(&mut self,
+                               node: <Ann as Annotation>::Start,
+                               Params { params, defaults, stricted, first_restricted,
+                                        rest }: Params<'a, Ann>,
+                              ) -> PRes<'a, EN<'a, Ann>> {
+        let previous_strict = self.strict;
+        let body = try!(self.parse_function_source_elements());
+
+        if self.strict {
+            // tolerate
+            if let Some(e) = first_restricted { return Err(e) }
+            // tolerate
+            if let Some(e) = stricted { return Err(e) }
+        }
+
+        self.strict = previous_strict;
+        Ok(finish(&node, self, E::Function(None, F {
+            params: params,
+            defaults: defaults,
+            rest: rest,
+            body: body,
+        })))
+    }
+
+    fn parse_property_method_function(&mut self) -> PRes<'a, EN<'a, Ann>> {
+        let node = self.start();
+
+        let params = try!(self.parse_params(None));
+        let method = try!(self.parse_property_function(node, params));
+
+        Ok(method)
+    }
 
     fn parse_object_property_key(&mut self) -> PRes<'a, PN<'a, Ann>> {
         let node = self.start();
@@ -1685,22 +1735,101 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         Ok(finish(&node, self, property))
     }
 
+    fn lookahead_property_name(&self) -> bool {
+        use ast::Tok::*;
+
+        match self.lookahead {
+            tk!(Identifier(_)) |
+            tk!(StringLiteral(_)) |
+            tk!(EscapedStringLiteral(_)) |
+            tk!(OctalStringLiteral(_)) |
+            tk!(BooleanLiteral(_)) |
+            tk!(NullLiteral) |
+            tk!(NumericLiteral(_)) |
+            tk!(OctalIntegerLiteral(_)) |
+            tk!(LParen) => true,
+            Some(ref tok) if is_keyword(tok) => true,
+            _ => false
+        }
+    }
+
+    // This function is to try to parse a MethodDefinition as defined in 14.3. But in the case of
+    // object literals, it might be called at a position where there is in fact a short hand
+    // identifier pattern or a data property. This can only be determined after we consumed up to
+    // the left parentheses.
+    //
+    // In order to avoid back tracking, it returns `Err(key)` if the position is not a
+    // MethodDefinition and the caller is responsible to visit other options.
+    fn try_parse_method_definition(&mut self,
+                                   token: Option<Token<'a>>,
+                                   key: PN<'a, Ann>,
+                                   node: &<Ann as Annotation>::Start,
+                                  ) -> PRes<'a, Result<PDN<'a, Ann>, PN<'a, Ann>>> {
+        Ok(match token {
+            tk!(T::Identifier("get")) if self.lookahead_property_name() => {
+                let key = try!(self.parse_object_property_key());
+                let method_node = self.start();
+                expect!(self, T::LParen);
+                expect!(self, T::RParen);
+                let value = try!(self.parse_property_function(method_node, Params {
+                    params: Vec::new(),
+                    defaults: Vec::new(),
+                    rest: None,
+                    stricted: None,
+                    first_restricted: None,
+                }));
+                Ok(finish(node, self, PropertyDefinition::Get(key, value)))
+            },
+            tk!(T::Identifier("set")) if self.lookahead_property_name() => {
+                let key = try!(self.parse_object_property_key());
+                let method_node = self.start();
+                expect!(self, T::LParen);
+                let mut options = Params {
+                    params: Vec::new(),
+                    defaults: Vec::new(),
+                    rest: None,
+                    stricted: None,
+                    first_restricted: None,
+                };
+                match self.lookahead {
+                    Some(tok @ Token { ty: T::RParen, .. }) => {
+                        // tolerate
+                        return Err(Error::UnexpectedToken(tok))
+                    },
+                    _ => {
+                        try!(self.parse_param(&mut options));
+                    }
+                }
+                expect!(self, T::RParen);
+                let value = try!(self.parse_property_function(method_node, options));
+                Ok(finish(node, self, PropertyDefinition::Set(key, value)))
+            },
+            _ if tmatch!(self.lookahead, T::LParen) => {
+                let value = try!(self.parse_property_method_function());
+                Ok(finish(node, self, PropertyDefinition::Method(key, value)))
+            },
+            _ => Err(key)
+        })
+    }
 
     fn parse_object_property(&mut self, /*has_proto*/_: &mut bool) -> PRes<'a, PDN<'a, Ann>> {
-        //let token = self.lookahead;
+        let token = self.lookahead;
         let node = self.start();
 
         let key = try!(self.parse_object_property_key());
-        /*let maybe_method = try!(self.try_parse_method_definition(token, key, computed, node));
+        let maybe_method = try!(self.try_parse_method_definition(token, key, &node));
 
-        if let Some(property) = maybe_method {
-            try!(self.check_proto(maybe_method.key, maybe_method.computed, has_proto));
-            // finished
-            return Ok(maybe_method)
-        }
+        let key = match maybe_method {
+            Ok(method) => {
+                //try!(self.check_proto(method.key, has_proto));
+                // finished
+                return Ok(method)
+            },
+            Err(key) => key
+        };
 
         // init property or short hand property
-        try!(self.check_proto(key, computed, has_proto));*/
+        //try!(self.check_proto(key, computed, has_proto));
 
         if let tk!(T::Colon) = self.lookahead {
             try!(self.lex());

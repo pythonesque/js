@@ -87,6 +87,10 @@ pub type PropertyDefinitionNode<'a, Ann> =
 pub enum PropertyDefinition<'a, Ann> {
     //Identifier(Identifier<'a>),
     Property(PropertyNode<'a, Ann>, ExpressionNode<'a, Ann>),
+    Init(PropertyNode<'a, Ann>, ExpressionNode<'a, Ann>),
+    Get(PropertyNode<'a, Ann>, ExpressionNode<'a, Ann>),
+    Set(PropertyNode<'a, Ann>, ExpressionNode<'a, Ann>),
+    Method(PropertyNode<'a, Ann>, ExpressionNode<'a, Ann>),
 }
 
 pub type ExpressionNode<'a, Ann> = Annotated<Ann, Expression<'a, Ann>>;
