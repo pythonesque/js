@@ -34,6 +34,8 @@ struct MyAnnot {
     end: Loc,
 }
 
+type Error<'a> = js::Error<Box<js::Token<js::ast::Tok<'a>>>>;
+
 impl<'a> Annotation for MyAnnot {
     type Ctx = js::Ctx<'a, MyAnnot, MyStart>;
     type Start = MyStart;
@@ -106,7 +108,7 @@ fn parse<'a, I, Ann, Start>(_: &Options,
 
 fn display<'a, O, Ann, Start>(options: &Options, path: Option<&Path>,
                               data: IoResult<&'a Option<Data<'a, Ann>>>, output: &mut O
-                             ) -> IoResult<IoResult<Result<(), &'a js::Error<'a>>>>
+                             ) -> IoResult<IoResult<Result<(), &'a Error<'a>>>>
     where O: Writer,
           Ann: 'a,
           Ann: fmt::Debug,
@@ -192,7 +194,7 @@ fn run<Ann, Start>(options: &Options, matches: &getopts::Matches)
             } ).join() {
             Ok(v) => {
                 match v.into_iter().collect::<IoResult<Vec<_>>>() {
-                    Ok(v) => if let Err(_) = v.into_iter().collect::<Result<Vec<()>, &js::Error>>() {
+                    Ok(v) => if let Err(_) = v.into_iter().collect::<Result<Vec<()>, &Error>>() {
                         env::set_exit_status(1);
                     },
                     Err(_) => env::set_exit_status(2)

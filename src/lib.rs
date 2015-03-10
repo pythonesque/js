@@ -64,7 +64,7 @@ macro_rules! expect {
     ($e:expr, $($pat:pat),+) => {
         match $e.lookahead {
             $( tk!($pat) => try!($e.lex()), )+
-            o => { try!($e.lex()); return Err($e.unexpected_token(o)) }
+            o => { try!($e.lex()); return $e.unexpected_token(o) }
         }
     }
 }
@@ -105,7 +105,7 @@ pub struct Ctx<'a, Ann, Start>
     pub start_line_number: Pos,
     pub start_line_start: Pos,
     //length: usize,
-    lookahead: Option<Token<'a>>,
+    lookahead: Option<Token<T<'a>>>,
     state: State<'a>,
 
     scanning: bool,
@@ -123,15 +123,17 @@ pub struct Ctx<'a, Ann, Start>
 }
 
 #[derive(Copy)]
-pub struct Token<'a> {
-    pub ty: T<'a>,
+pub struct Token<T> {
+    pub ty: T,
     pub line_number: Pos,
     pub line_start: Pos,
     pub start: Pos,
     pub end: Pos
 }
 
-impl<'a> fmt::Debug for Token<'a> {
+impl<T> fmt::Debug for Token<T>
+    where T: fmt::Debug
+{
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}:{}: {:?}", self.line_number, self.start - self.line_start + 1, self.ty)
     }
@@ -151,8 +153,8 @@ pub struct Options;/* {
 }*/
 
 #[derive(Debug)]
-pub enum Error<'a> {
-    UnexpectedToken(Token<'a>),
+pub enum Error<Tok> {
+    UnexpectedToken(Tok),
     UnexpectedChar(char),
     ExpectedHex,
     InvalidUnicode(u32),
@@ -160,16 +162,16 @@ pub enum Error<'a> {
     UnterminatedStringLiteral,
     UnexpectedEOF,
     ParseFloat(ParseFloatError),
-    StrictFunctionName(Token<'a>),
-    StrictReservedWord(Token<'a>),
-    StrictOctalLiteral(Token<'a>),
+    StrictFunctionName(Tok),
+    StrictReservedWord(Tok),
+    StrictOctalLiteral(Tok),
     ObjectPatternAsRestParameter,
     DefaultRestParameter,
     ParameterAfterRestParameter,
-    StrictParamName(Token<'a>),
-    StrictParamDupe(Token<'a>),
+    StrictParamName(Tok),
+    StrictParamDupe(Tok),
     StrictVarName,
-    StrictLHSAssignment(Token<'a>),
+    StrictLHSAssignment(Tok),
     InvalidLHSInArgument,
     IllegalReturn,
     StrictLHSPrefix,
@@ -183,18 +185,62 @@ pub enum Error<'a> {
     StrictCatchVariable,
     NoCatchOrFinally,
     IllegalBreak,
-    UnknownLabel(Token<'a>),
+    UnknownLabel(Tok),
     IllegalContinue,
-    LabelRedeclaration(Token<'a>),
+    LabelRedeclaration(Tok),
 }
 
-impl<'a> FromError<ParseFloatError> for Error<'a> {
+impl<T> FromError<ParseFloatError> for Error<T> {
     fn from_error(err: ParseFloatError) -> Self {
         Error::ParseFloat(err)
     }
 }
 
-pub type PRes<'a, T> = Result<T, Error<'a>>;
+impl<'a> FromError<Error<Token<T<'a>>>> for Error<Box<Token<T<'a>>>> {
+    #[cold] #[inline(never)]
+    fn from_error(err: Error<Token<T<'a>>>) -> Self {
+        use self::Error::*;
+
+        match err {
+            UnexpectedToken(tok) => UnexpectedToken(Box::new(tok)),
+            UnexpectedChar(ch) => UnexpectedChar(ch),
+            ExpectedHex => ExpectedHex,
+            InvalidUnicode(ch) => InvalidUnicode(ch),
+            UnexpectedEscape(i) => UnexpectedEscape(i),
+            UnterminatedStringLiteral => UnterminatedStringLiteral,
+            UnexpectedEOF => UnexpectedEOF,
+            ParseFloat(err) => ParseFloat(err),
+            StrictFunctionName(tok) => StrictFunctionName(Box::new(tok)),
+            StrictReservedWord(tok) => StrictReservedWord(Box::new(tok)),
+            StrictOctalLiteral(tok) => StrictOctalLiteral(Box::new(tok)),
+            ObjectPatternAsRestParameter => ObjectPatternAsRestParameter,
+            DefaultRestParameter => DefaultRestParameter,
+            ParameterAfterRestParameter => ParameterAfterRestParameter,
+            StrictParamName(tok) => StrictParamName(Box::new(tok)),
+            StrictParamDupe(tok) => StrictParamDupe(Box::new(tok)),
+            StrictVarName => StrictVarName,
+            StrictLHSAssignment(tok) => StrictLHSAssignment(Box::new(tok)),
+            InvalidLHSInArgument => InvalidLHSInArgument,
+            IllegalReturn => IllegalReturn,
+            StrictLHSPrefix => StrictLHSPrefix,
+            InvalidLHSInAssignment => InvalidLHSInAssignment,
+            StrictDelete => StrictDelete,
+            StrictLHSPostfix => StrictLHSPostfix,
+            UnterminatedRegExp => UnterminatedRegExp,
+            InvalidLHSInForIn => InvalidLHSInForIn,
+            NewlineAfterThrow => NewlineAfterThrow,
+            MultipleDefaultsInSwitch => MultipleDefaultsInSwitch,
+            StrictCatchVariable => StrictCatchVariable,
+            NoCatchOrFinally => NoCatchOrFinally,
+            IllegalBreak => IllegalBreak,
+            UnknownLabel(tok) => UnknownLabel(Box::new(tok)),
+            IllegalContinue => IllegalContinue,
+            LabelRedeclaration(tok) => LabelRedeclaration(Box::new(tok)),
+        }
+    }
+}
+
+pub type PRes<'a, U> = Result<U, Error<Box<Token<T<'a>>>>>;
 
 impl RootCtx {
     pub fn new() -> Self {
@@ -347,7 +393,7 @@ fn keyword<'a>(id: &str, strict: bool) -> Option<T<'a>> {
     })
 }
 
-fn is_keyword<'a>(tok: &Token<'a>) -> bool {
+fn is_keyword<'a>(tok: &Token<T<'a>>) -> bool {
     use ast::Tok::*;
 
     match tok.ty {
@@ -365,7 +411,7 @@ fn is_keyword<'a>(tok: &Token<'a>) -> bool {
     }
 }
 
-fn assign_op<'a>(tok: &Token<'a>) -> Option<AssignOp> {
+fn assign_op<'a>(tok: &Token<T<'a>>) -> Option<AssignOp> {
     use ast::AssignOp::*;
 
     Some(match tok.ty {
@@ -378,7 +424,7 @@ fn assign_op<'a>(tok: &Token<'a>) -> Option<AssignOp> {
     })
 }
 
-fn identifier_name<'a>(tok: &Token<'a>) -> Option<&'a str> {
+fn identifier_name<'a>(tok: &Token<T<'a>>) -> Option<&'a str> {
     use ast::Tok::*;
 
     Some(match tok.ty {
@@ -410,7 +456,7 @@ fn identifier_name<'a>(tok: &Token<'a>) -> Option<&'a str> {
 
 type Prec = u8;
 
-fn binop<'a>(tok: &Token<'a>, allow_in: bool) -> Option<(BinOp, Prec)> {
+fn binop<'a>(tok: &Token<T<'a>>, allow_in: bool) -> Option<(BinOp, Prec)> {
     use ast::BinOp::*;
 
     Some(match tok.ty {
@@ -432,7 +478,7 @@ fn binop<'a>(tok: &Token<'a>, allow_in: bool) -> Option<(BinOp, Prec)> {
     })
 }
 
-fn unop<'a>(tok: &Token<'a>) -> Option<UnOp> {
+fn unop<'a>(tok: &Token<T<'a>>) -> Option<UnOp> {
     use ast::UnOp::*;
 
     Some(match tok.ty {
@@ -448,7 +494,7 @@ fn unop<'a>(tok: &Token<'a>) -> Option<UnOp> {
     })
 }
 
-fn updateop<'a>(tok: &Token<'a>) -> Option<UpdateOp> {
+fn updateop<'a>(tok: &Token<T<'a>>) -> Option<UpdateOp> {
     use ast::UpdateOp::*;
 
     Some(match tok.ty {
@@ -478,10 +524,10 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
     where Ann: Annotation<Ctx=Self, Start=Start>,
 {
     #[cold] #[inline(never)]
-    fn unexpected_char(&self, opt: Option<(char, &str)>) -> Error<'a> {
+    fn unexpected_char<T>(&self, opt: Option<(char, &str)>) -> PRes<'a, T> {
         match opt {
-            Some((ch, _)) => Error::UnexpectedChar(ch),
-            None => Error::UnexpectedEOF,
+            Some((ch, _)) => Err(Error::UnexpectedChar(ch)),
+            None => Err(Error::UnexpectedEOF),
         }
     }
 
@@ -700,7 +746,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     }
                 }
             },
-            o => return Err(self.unexpected_char(o))
+            o => return self.unexpected_char(o)
         });
 
         // '\u' (U+005C, U+0075) denotes an escaped character.
@@ -725,7 +771,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                             }
                         });
                     },
-                    o => return Err(self.unexpected_char(o))
+                    o => return self.unexpected_char(o)
                 },
                 _ => id.push(ch)
             }
@@ -758,7 +804,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         Ok(&self.source[start_byte_index..self.byte_index])
     }
 
-    fn scan_identifier(&mut self) -> PRes<'a, Token<'a>> {
+    fn scan_identifier(&mut self) -> PRes<'a, Token<T<'a>>> {
         let start = self.index;
         let id = try!(match self.rest.slice_shift_char() {
             Some(('\\', rest)) => {
@@ -794,7 +840,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         })
     }
 
-    fn scan_punctuator(&mut self) -> PRes<'a, Token<'a>> {
+    fn scan_punctuator(&mut self) -> PRes<'a, Token<T<'a>>> {
         use ast::Tok::*;
 
         let line_number = self.line_number;
@@ -1047,7 +1093,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         })
     }
 
-    fn scan_hex_literal(&mut self, start: Pos) -> PRes<'a, Token<'a>> {
+    fn scan_hex_literal(&mut self, start: Pos) -> PRes<'a, Token<T<'a>>> {
         let byte_begin = self.byte_index;
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
             if let None = hex_digit(ch) { break }
@@ -1055,7 +1101,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             self.byte_index += 1;
             self.rest = rest;
         }
-        if byte_begin == self.byte_index { return Err(self.unexpected_char(self.rest.slice_shift_char())) }
+        if byte_begin == self.byte_index { return self.unexpected_char(self.rest.slice_shift_char()) }
         if let Some(ch) = self.rest.chars().next() {
             if is_identifier_start(ch as u32) { return Err(Error::UnexpectedChar(ch)) }
         }
@@ -1068,7 +1114,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         })
     }
 
-    fn scan_binary_literal(&mut self, start: Pos) -> PRes<'a, Token<'a>> {
+    fn scan_binary_literal(&mut self, start: Pos) -> PRes<'a, Token<T<'a>>> {
         let byte_begin = self.byte_index;
         while let Some(('0'...'1', rest)) = self.rest.slice_shift_char() {
             self.index += 1;
@@ -1076,7 +1122,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             self.rest = rest;
         }
         // only 0b or 0B
-        if byte_begin == self.byte_index { return Err(self.unexpected_char(self.rest.slice_shift_char())) }
+        if byte_begin == self.byte_index { return self.unexpected_char(self.rest.slice_shift_char()) }
         if let Some(ch) = self.rest.chars().next() {
             if is_identifier_start(ch as u32) || is_decimal_digit(ch) { return Err(Error::UnexpectedChar(ch)) }
         }
@@ -1090,7 +1136,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
     }
 
     fn scan_octal_literal<Tag>(&mut self, prefix: char, rest: &'a str, start: Pos,
-                          tag: Tag) -> PRes<'a, Token<'a>>
+                          tag: Tag) -> PRes<'a, Token<T<'a>>>
         where Tag: FnOnce(f64) -> T<'a>,
     {
         let octal = match octal_digit(prefix) { Some(_) => true, _ => false };
@@ -1107,7 +1153,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             self.rest = rest;
         }
         // only 0o or 0O
-        if byte_begin == self.byte_index { return Err(self.unexpected_char(self.rest.slice_shift_char())) }
+        if byte_begin == self.byte_index { return self.unexpected_char(self.rest.slice_shift_char()) }
         if let Some(ch) = self.rest.chars().next() {
             if is_identifier_start(ch as u32) || is_decimal_digit(ch) { return Err(Error::UnexpectedChar(ch)) }
         }
@@ -1128,7 +1174,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         true
     }
 
-    fn scan_numeric_literal(&mut self, ch: char, rest: &'a str) -> PRes<'a, Token<'a>> {
+    fn scan_numeric_literal(&mut self, ch: char, rest: &'a str) -> PRes<'a, Token<T<'a>>> {
         let start = self.index;
         let start_byte = self.byte_index;
 
@@ -1228,7 +1274,8 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
     }
 
     #[inline]
-    fn scan_escaped_string_literal(&mut self, quote: char, start: Pos, s: &'a mut Vec<u16>) -> PRes<'a, Token<'a>>
+    fn scan_escaped_string_literal(&mut self, quote: char, start: Pos, s: &'a mut Vec<u16>
+                                  ) -> PRes<'a, Token<T<'a>>>
     {
         let mut octal = false;
 
@@ -1340,7 +1387,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
     // 7.8.4 String Literals
 
-    fn scan_string_literal(&mut self, quote: char) -> PRes<'a, Token<'a>>
+    fn scan_string_literal(&mut self, quote: char) -> PRes<'a, Token<T<'a>>>
     {
         debug_assert!(quote == '"' || quote == '\'', r#"Quote character must be `'` or `"`."#);
 
@@ -1506,7 +1553,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         }*/)
     }
 
-    fn advance(&mut self) -> PRes<'a, Token<'a>> {
+    fn advance(&mut self) -> PRes<'a, Token<T<'a>>> {
         match self.rest.slice_shift_char() {
             None => Ok(Token {
                 ty: T::EOF,
@@ -1533,7 +1580,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         }
     }
 
-    fn lex(&mut self) -> PRes<'a, /*Token<'a>*/()> {
+    fn lex(&mut self) -> PRes<'a, /*Token<T<'a>>*/()> {
         self.scanning = true;
 
         self.last_index = Some(self.index);
@@ -1592,8 +1639,8 @@ struct Params<'a, Ann> {
     params: Vec<IN<'a, Ann>>,
     defaults: Vec<BEN<'a, Ann>>,
     rest: Option<IN<'a, Ann>>,
-    stricted: Option<Error<'a>>,
-    first_restricted: Option<Error<'a>>,
+    stricted: Option<Error<Token<T<'a>>>>,
+    first_restricted: Option<Error<Token<T<'a>>>>,
 }
 
 enum InitFor<'a, Ann> {
@@ -1606,10 +1653,17 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
           //Ann: fmt::Debug,
 {
     #[cold] #[inline(never)]
-    fn unexpected_token(&self, opt: Option<Token<'a>>) -> Error<'a> {
+    fn tok_error<F, U>(&self, constructor: F, token: Token<T<'a>>) -> PRes<'a, U>
+        where F: FnOnce(Box<Token<T<'a>>>) -> Error<Box<Token<T<'a>>>>
+    {
+        Err(constructor(Box::new(token)))
+    }
+
+    #[cold] #[inline(never)]
+    fn unexpected_token<U>(&self, opt: Option<Token<T<'a>>>) -> PRes<'a, U> {
         match opt {
-            Some(tok) => Error::UnexpectedToken(tok),
-            None => Error::UnexpectedEOF,
+            Some(tok) => self.tok_error(Error::UnexpectedToken, tok),
+            None => Err(Error::UnexpectedEOF)
         }
     }
 
@@ -1635,7 +1689,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         match self.lookahead {
             tk!(T::RBrack) | None => Ok(()),
-            o => Err(self.unexpected_token(o))
+            o => self.unexpected_token(o)
         }
     }
 
@@ -1680,9 +1734,9 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         if self.strict {
             // tolerate
-            if let Some(e) = first_restricted { return Err(e) }
+            if let Some(e) = first_restricted { return Err(FromError::from_error(e)) }
             // tolerate
-            if let Some(e) = stricted { return Err(e) }
+            if let Some(e) = stricted { return Err(FromError::from_error(e)) }
         }
 
         self.strict = previous_strict;
@@ -1713,7 +1767,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             Some(tok @ Token { ty: T::OctalStringLiteral(_), .. }) |
             Some(tok @ Token { ty: T::OctalIntegerLiteral(_), .. }) if self.strict => {
                 // tolerate
-                return Err(Error::StrictOctalLiteral(tok));
+                return self.tok_error(Error::StrictOctalLiteral, tok);
             },
             tk!(T::StringLiteral(s)) => Property::String(s),
             tk!(T::EscapedStringLiteral(l)) => Property::EscapedString(l),
@@ -1727,7 +1781,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             },
             Some(token) => match identifier_name(&token) {
                 Some(name) => Property::Identifier(name),
-                None => return Err(Error::UnexpectedToken(token))
+                None => return self.tok_error(Error::UnexpectedToken, token)
             },
             None => return Err(Error::UnexpectedEOF),
         };
@@ -1761,7 +1815,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
     // In order to avoid back tracking, it returns `Err(key)` if the position is not a
     // MethodDefinition and the caller is responsible to visit other options.
     fn try_parse_method_definition(&mut self,
-                                   token: Option<Token<'a>>,
+                                   token: Option<Token<T<'a>>>,
                                    key: PN<'a, Ann>,
                                    node: &<Ann as Annotation>::Start,
                                   ) -> PRes<'a, Result<PDN<'a, Ann>, PN<'a, Ann>>> {
@@ -1794,7 +1848,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 match self.lookahead {
                     Some(tok @ Token { ty: T::RParen, .. }) => {
                         // tolerate
-                        return Err(Error::UnexpectedToken(tok))
+                        return self.tok_error(Error::UnexpectedToken, tok)
                     },
                     _ => {
                         try!(self.parse_param(&mut options));
@@ -1837,7 +1891,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             return Ok(finish(&node, self, PropertyDefinition::Property(key, value)));
         }
 
-        Err(self.unexpected_token(self.lookahead))
+        self.unexpected_token(self.lookahead)
     }
 
     fn parse_object_initializer(&mut self) -> PRes<'a, EN<'a, Ann>> {
@@ -1894,7 +1948,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 T::OctalStringLiteral(o) => {
                     if self.strict {
                         // tolerate
-                        return Err(Error::StrictOctalLiteral(token))
+                        return self.tok_error(Error::StrictOctalLiteral, token)
                     }
                     try!(self.lex());
                     E::EscapedString(o)
@@ -1903,7 +1957,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 T::OctalIntegerLiteral(n) => {
                     if self.strict {
                         // tolerate
-                        return Err(Error::StrictOctalLiteral(token))
+                        return self.tok_error(Error::StrictOctalLiteral, token)
                     }
                     try!(self.lex());
                     E::Number(n)
@@ -1923,7 +1977,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 T::NullLiteral => { try!(self.lex()); E::Null },
                 _ => {
                     try!(self.lex());
-                    return Err(Error::UnexpectedToken(token))
+                    return self.tok_error(Error::UnexpectedToken, token)
                 }
             };
             Ok(finish(&node, self, exp))
@@ -1962,7 +2016,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         match token.as_ref().and_then(identifier_name) {
             Some(name) => Ok(finish(&node, self, Property::Identifier(name))),
-            None => Err(self.unexpected_token(token))
+            None => self.unexpected_token(token)
         }
     }
 
@@ -2270,7 +2324,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 match expr {
                     A(_, E::Identifier(i)) if self.strict && is_restricted_word(&i) => {
                         // tolerate
-                        Err(Error::StrictLHSAssignment(token))
+                        self.tok_error(Error::StrictLHSAssignment, token)
                     },
                     A(_, E::Identifier(_)) | A(_, E::Member(_)) => {
                         try!(self.lex());
@@ -2345,9 +2399,9 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             Some(token) => {
                 if self.strict && is_strict_mode_reserved(&token.ty) {
                     // tolerate
-                    Err(Error::StrictReservedWord(token))
+                    self.tok_error(Error::StrictReservedWord, token)
                 } else {
-                    Err(Error::UnexpectedToken(token))
+                    self.tok_error(Error::UnexpectedToken, token)
                 }
             },
             None => Err(Error::UnexpectedEOF)
@@ -2642,7 +2696,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 // Guess: the vector is small enough that scanning through it is probably faster than
                 // maintaining the hash.  If wrong, we can do it differently.
                 if !self.state.label_set.iter().any( |l| *l == *label) {
-                    return Err(Error::UnknownLabel(tok));
+                    return self.tok_error(Error::UnknownLabel, tok);
                 }
                 Some(label)
             },
@@ -2680,7 +2734,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 // Guess: the vector is small enough that scanning through it is probably faster than
                 // maintaining the hash.  If wrong, we can do it differently.
                 if !self.state.label_set.iter().any( |l| *l == *label) {
-                    return Err(Error::UnknownLabel(tok));
+                    return self.tok_error(Error::UnknownLabel, tok);
                 }
                 Some(label)
             },
@@ -2817,7 +2871,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         expect!(self, T::LParen);
         if let Some(tok @ Token { ty: T::RParen, .. }) = self.lookahead {
-            return Err(Error::UnexpectedToken(tok))
+            return self.tok_error(Error::UnexpectedToken, tok)
         }
 
         let param = try!(self.parse_variable_identifier());
@@ -2908,7 +2962,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                         try!(self.lex());
 
                         if self.state.label_set.iter().any( |l| *l == name) {
-                            return Err(Error::LabelRedeclaration(tok));
+                            return self.tok_error(Error::LabelRedeclaration, tok);
                         }
 
                         self.state.label_set.push(name);
@@ -2965,7 +3019,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                         T::StringLiteral("use strict") => {
                             self.strict = true;
                             // tolerate
-                            if let Some(e) = first_restricted { return Err(e) }
+                            if let Some(e) = first_restricted { return Err(FromError::from_error(e)) }
                         },
                         T::OctalStringLiteral(_) if first_restricted.is_none() => {
                             first_restricted = Some(Error::StrictOctalLiteral(token));
@@ -3012,7 +3066,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
     fn validate_param(&self,
                       params: &mut Params<'a, Ann>,
-                      param: Token<'a>,
+                      param: Token<T<'a>>,
                       name: Identifier<'a>) {
         // Guess: the vector is small enough that scanning through it is probably faster than
         // maintaining the hash.  If wrong, we can do it differently.
@@ -3073,7 +3127,8 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         Ok(!tmatch!(self.lookahead, T::RParen))
     }
 
-    fn parse_params(&mut self, first_restricted: Option<Error<'a>>) -> PRes<'a, Params<'a, Ann>> {
+    fn parse_params(&mut self, first_restricted: Option<Error<Token<T<'a>>>>
+                   ) -> PRes<'a, Params<'a, Ann>> {
         let mut params = Params {
             params: Vec::new(),
             defaults: Vec::new(),
@@ -3107,7 +3162,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 first_restricted = if self.strict {
                     if is_restricted_word(&id) {
                         // tolerate...
-                        return Err(Error::StrictFunctionName(token))
+                        return self.tok_error(Error::StrictFunctionName, token)
                     } else { None }
                 } else {
                      if is_restricted_word(&id) {
@@ -3126,9 +3181,9 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         let previous_strict = self.strict;
         let body = try!(self.parse_function_source_elements());
         if self.strict {
-            if let Some(e) = first_restricted { return Err(e) }
+            if let Some(e) = first_restricted { return Err(FromError::from_error(e)) }
             // tolerate
-            if let Some(e) = stricted { return Err(e) }
+            if let Some(e) = stricted { return Err(FromError::from_error(e)) }
         }
         self.strict = previous_strict;
 
@@ -3157,7 +3212,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 first_restricted = if self.strict {
                     if is_restricted_word(&id) {
                         // tolerate...
-                        return Err(Error::StrictFunctionName(token))
+                        return self.tok_error(Error::StrictFunctionName, token)
                     } else { None }
                 } else {
                      if is_restricted_word(&id) {
@@ -3177,9 +3232,9 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         let previous_strict = self.strict;
         let body = try!(self.parse_function_source_elements());
         if self.strict {
-            if let Some(e) = first_restricted { return Err(e) }
+            if let Some(e) = first_restricted { return Err(FromError::from_error(e)) }
             // tolerate
-            if let Some(e) = stricted { return Err(e) }
+            if let Some(e) = stricted { return Err(FromError::from_error(e)) }
         }
         self.strict = previous_strict;
 
@@ -3213,7 +3268,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                         T::StringLiteral("use strict") => {
                             self.strict = true;
                             // tolerate
-                            if let Some(e) = first_restricted { return Err(e) }
+                            if let Some(e) = first_restricted { return Err(FromError::from_error(e)) }
                         },
                         T::OctalStringLiteral(_) if first_restricted.is_none() => {
                             first_restricted = Some(Error::StrictOctalLiteral(token));
