@@ -1,4 +1,4 @@
-#![feature(exit_status, io, libc, rustc_private, str_words, os, path)]
+#![feature(core, exit_status, io, libc, rustc_private, str_words, os, path)]
 
 extern crate getopts;
 extern crate js;
@@ -11,6 +11,7 @@ use std::env;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
+use std::num::NumCast;
 use std::os;
 use std::path::Path;
 use std::sync::mpsc;
@@ -107,6 +108,7 @@ struct Options {
     only_errors: bool,
     flow: Option<Flow>,
     unbuffered: bool,
+    shebang: bool,
 }
 
 fn parse<'a, I, Ann, Start>
@@ -120,6 +122,30 @@ fn parse<'a, I, Ann, Start>
     let Data(ref ctx, ref mut string, ref mut res) = *data;
     try!(input.read_to_string(string));
     drop(input);
+    let (string, index) = if options.shebang && string.starts_with("#!") {
+        // The reason we have to check for overflow here is that we need to do a conversion to
+        // Pos from usize, which could potentially fail.  Normally this is not necessary because
+        // the parser will check for overflow itself, but in this case we are doing preprocessing
+        // so we can't rely on that.
+        let (string, index) = match string.char_indices()
+                                          .enumerate()
+                                          .find( |&(_, (_, ch))| ch == '\n') {
+            Some((index, (byte_index, _))) => (&string[byte_index ..], (index - 1)),
+            None => ("", string.chars().count())
+        };
+        match NumCast::from(index) {
+            Some(index) => (string, index),
+            None => {
+                *res = Some(Res {
+                    result: Err(js::Error::PosOverflow),
+                    mode: Mode::Unchecked,
+                });
+                return Ok(());
+            }
+        }
+    } else {
+        (&**string, 0)
+    };
     *res = Some(match options.flow {
         Some(_) => {
             let mut mode = None;
@@ -137,13 +163,19 @@ fn parse<'a, I, Ann, Start>
                         });
                     }
                 },
+                index: index,
+                line_number: 0,
+                line_start: 0,
             });
             Res { mode: mode.unwrap_or(Mode::Unchecked), result: result }
         },
         None => {
             Res {
                 result: js::parse::<Ann, Start, _>(ctx, string, js::Options {
-                    add_comment: |_| {}
+                    add_comment: |_| {},
+                    index: index,
+                    line_number: 0,
+                    line_start: 0,
                 }),
                 mode: Mode::Unchecked,
             }
@@ -285,6 +317,7 @@ pub fn main() {
         optflag("", "run-destructors", "run destructors on exit (e.g. for use with Valgrind)"),
         optopt("", "flow", "detect @flow annotations (no [default], yes, only, ignore)", "FLOW"),
         optflag("", "unbuffered", "don't buffer output (it is always buffered per line)"),
+        optflag("", "shebang", "ignore #! at start of file"),
     ];
     let matches = match getopts(&args.collect::<Vec<_>>(), &opts) {
         Ok(m) => { m }
@@ -303,6 +336,7 @@ pub fn main() {
             opt => panic!("Unrecognized argument `{}` for option `flow`", opt)
         }),
         unbuffered: matches.opt_present("unbuffered"),
+        shebang: matches.opt_present("shebang"),
     };
     if matches.opt_present("h") {
         print_usage(&*program, &opts);

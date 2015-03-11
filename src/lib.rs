@@ -48,7 +48,7 @@ use std::char;
 use std::error::FromError;
 use std::fmt;
 use std::mem;
-use std::num::{self, ParseFloatError};
+use std::num::{self, Int, NumCast, ParseFloatError};
 use std::ops::{Deref, DerefMut};
 
 use unicode::str::Utf16Encoder;
@@ -168,6 +168,10 @@ pub struct Options<F> {
     //   * token
     // 1 option: tolerant (really 2 but not inlined)
     // 1 options: source (seems pointless?  Disabled)
+    // Allow custom start locations for error reporting
+    pub index: Pos,
+    pub line_number: Pos,
+    pub line_start: Pos,
 }
 
 #[derive(Debug)]
@@ -206,6 +210,8 @@ pub enum Error<Tok> {
     UnknownLabel(Tok),
     IllegalContinue,
     LabelRedeclaration(Tok),
+    PosOverflow,
+    IllegalLineStart,
 }
 
 impl<T> FromError<ParseFloatError> for Error<T> {
@@ -254,6 +260,8 @@ impl<'a> FromError<Error<Token<T<'a>>>> for Error<Box<Token<T<'a>>>> {
             UnknownLabel(tok) => UnknownLabel(Box::new(tok)),
             IllegalContinue => IllegalContinue,
             LabelRedeclaration(tok) => LabelRedeclaration(Box::new(tok)),
+            PosOverflow => PosOverflow,
+            IllegalLineStart => IllegalLineStart,
         }
     }
 }
@@ -3377,9 +3385,20 @@ pub fn parse<'a, Ann, Start, AddComment>
           AddComment: FnMut(Token<Comment<'a>>),
 {
     let source = code;
-    let index = 0;
-    let line_number = if code.len() > 0 { 1 } else { 0 };
-    let line_start = 0;
+    // Check to make sure we can't overflow Pos (by doing this beforehand we don't have to waste
+    // time checking later).  This assumes that index is at most (initial index) + len, as are
+    // line_number and line_start (the latter should be <= index so we check for that as well).
+    // TODO: verify that the above are always true.
+    if options.line_start > options.index { return Err(Error::IllegalLineStart) }
+    match NumCast::from(source.len()).and_then( |len| Some(
+            options.index.checked_add(len).is_some() &&
+            options.line_number.checked_add(len).is_some()) ) {
+        None | Some(false) => return Err(Error::PosOverflow),
+        Some(true) => {}
+    };
+    let index = options.index;
+    let line_number = options.line_number + if code.len() > 0 { 1 } else { 0 };
+    let line_start = options.line_start;
 
     let start_index = index;
     let start_line_number = line_number;
@@ -3434,6 +3453,9 @@ pub fn parse<'a, Ann, Start, AddComment>
 fn it_works() {
     let root = RootCtx::new();
     println!("{:?}", parse::<(), _, _>(&root, include_str!("../tests/test.js"), Options {
-        add_comment: |comment| println!("{:?}", comment)
+        add_comment: |comment| println!("{:?}", comment),
+        index: 0,
+        line_number: 0,
+        line_start: 0,
     }).unwrap());
 }
