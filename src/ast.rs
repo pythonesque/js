@@ -18,7 +18,7 @@ pub trait Annotation {
 }
 
 pub fn finish<'a, Ann, T>(start: &'a <Ann as Annotation>::Start,
-                          ctx: &'a mut <Ann as Annotation>::Ctx,
+                          ctx: &'a <Ann as Annotation>::Ctx,
                           inner: T,
                          ) -> Annotated<Ann, T>
     where Ann: Annotation,

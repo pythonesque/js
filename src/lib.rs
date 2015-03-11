@@ -49,6 +49,7 @@ use std::error::FromError;
 use std::fmt;
 use std::mem;
 use std::num::{self, ParseFloatError};
+use std::ops::{Deref, DerefMut};
 
 use unicode::str::Utf16Encoder;
 
@@ -145,12 +146,23 @@ impl<T> fmt::Debug for Token<T>
     File(&Path)
 }*/
 
-
-pub struct Options;/* {
-    range: bool,
-    loc: Loc,
-    attach_comment: bool,
-}*/
+pub struct Options<F> {
+    // 5 options: range, comment, attach_comment
+    //   * none
+    //   * range
+    //   * range and comment
+    //   * comment
+    //   * range, comment and attach_comment
+    pub add_comment: F,
+    // 2 options: loc
+    //   * none
+    //   * loc
+    // 2 options: token
+    //   * none
+    //   * token
+    // 1 option: tolerant (really 2 but not inlined)
+    // 1 options: source (seems pointless?  Disabled)
+}
 
 #[derive(Debug)]
 pub enum Error<Tok> {
@@ -507,6 +519,21 @@ fn updateop<'a>(tok: &Token<T<'a>>) -> Option<UpdateOp> {
 
 enum ScanHex { U, X }
 
+struct ExtraCtx<'a, Ann, Start, AddComment> {
+    ctx: Ctx<'a, Ann, Start>,
+    options: Options<AddComment>,
+}
+
+impl<'a, Ann, Start, AddComment> Deref for ExtraCtx<'a, Ann, Start, AddComment> {
+    type Target = Ctx<'a, Ann, Start>;
+
+    fn deref(&self) -> &Ctx<'a, Ann, Start> { &self.ctx }
+}
+
+impl<'a, Ann, Start, AddComment> DerefMut for ExtraCtx<'a, Ann, Start, AddComment> {
+    fn deref_mut(&mut self) -> &mut Ctx<'a, Ann, Start> { &mut self.ctx }
+}
+
 impl<'a> Annotation for () {
     type Ctx = Ctx<'a, (), ()>;
     type Start = ();
@@ -520,8 +547,9 @@ impl<'a> Annotation for () {
     }
 }
 
-impl<'a, Ann, Start> Ctx<'a, Ann, Start>
-    where Ann: Annotation<Ctx=Self, Start=Start>,
+impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
+    where Ann: Annotation<Ctx=Ctx<'a, Ann, Start>, Start=Start>,
+          AddComment: FnMut(Token<&'a str>),
 {
     #[cold] #[inline(never)]
     fn unexpected_char<T>(&self, opt: Option<(char, &str)>) -> PRes<'a, T> {
@@ -1648,8 +1676,9 @@ enum InitFor<'a, Ann> {
     Exp(EN<'a, Ann>),
 }
 
-impl<'a, Ann, Start> Ctx<'a, Ann, Start>
-    where Ann: Annotation<Ctx=Self, Start=Start>,
+impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
+    where Ann: Annotation<Ctx=Ctx<'a, Ann, Start>, Start=Start>,
+          AddComment: FnMut(Token<&'a str>),
           //Ann: fmt::Debug,
 {
     #[cold] #[inline(never)]
@@ -1719,7 +1748,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         try!(self.lex());
 
-        Ok(finish(&node, self, E::Array(elements)))
+        Ok(finish(&node, &self.ctx, E::Array(elements)))
     }
 
     // 11.1.5 Object Initializer
@@ -1740,7 +1769,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         }
 
         self.strict = previous_strict;
-        Ok(finish(&node, self, E::Function(None, F {
+        Ok(finish(&node, &self.ctx, E::Function(None, F {
             params: params,
             defaults: defaults,
             rest: rest,
@@ -1786,7 +1815,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             None => return Err(Error::UnexpectedEOF),
         };
 
-        Ok(finish(&node, self, property))
+        Ok(finish(&node, &self.ctx, property))
     }
 
     fn lookahead_property_name(&self) -> bool {
@@ -1832,7 +1861,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     stricted: None,
                     first_restricted: None,
                 }));
-                Ok(finish(node, self, PropertyDefinition::Get(key, value)))
+                Ok(finish(node, &self.ctx, PropertyDefinition::Get(key, value)))
             },
             tk!(T::Identifier("set")) if self.lookahead_property_name() => {
                 let key = try!(self.parse_object_property_key());
@@ -1856,11 +1885,11 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 }
                 expect!(self, T::RParen);
                 let value = try!(self.parse_property_function(method_node, options));
-                Ok(finish(node, self, PropertyDefinition::Set(key, value)))
+                Ok(finish(node, &self.ctx, PropertyDefinition::Set(key, value)))
             },
             _ if tmatch!(self.lookahead, T::LParen) => {
                 let value = try!(self.parse_property_method_function());
-                Ok(finish(node, self, PropertyDefinition::Method(key, value)))
+                Ok(finish(node, &self.ctx, PropertyDefinition::Method(key, value)))
             },
             _ => Err(key)
         })
@@ -1888,7 +1917,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         if let tk!(T::Colon) = self.lookahead {
             try!(self.lex());
             let value = try!(self.parse_assignment_expression());
-            return Ok(finish(&node, self, PropertyDefinition::Property(key, value)));
+            return Ok(finish(&node, &self.ctx, PropertyDefinition::Property(key, value)));
         }
 
         self.unexpected_token(self.lookahead)
@@ -1916,7 +1945,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         expect!(self, T::RBrack);
 
-        Ok(finish(&node, self, E::Object(properties)))
+        Ok(finish(&node, &self.ctx, E::Object(properties)))
     }
 
     // 11.1.6 The Grouping Operator
@@ -1980,7 +2009,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     return self.tok_error(Error::UnexpectedToken, token)
                 }
             };
-            Ok(finish(&node, self, exp))
+            Ok(finish(&node, &self.ctx, exp))
         } else {
             return Err(Error::UnexpectedEOF)
         }
@@ -2015,7 +2044,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         try!(self.lex());
 
         match token.as_ref().and_then(identifier_name) {
-            Some(name) => Ok(finish(&node, self, Property::Identifier(name))),
+            Some(name) => Ok(finish(&node, &self.ctx, Property::Identifier(name))),
             None => self.unexpected_token(token)
         }
     }
@@ -2031,7 +2060,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         let node = self.start();
         let expr = try!(self.parse_expression());
-        let node = finish(&node, self, Property::Computed(expr));
+        let node = finish(&node, &self.ctx, Property::Computed(expr));
 
         expect!(self, T::RBrace);
 
@@ -2048,7 +2077,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             _ => Vec::new()
         };
 
-        Ok(finish(&node, self, E::New(Box::new(callee), args)))
+        Ok(finish(&node, &self.ctx, E::New(Box::new(callee), args)))
     }
 
     fn parse_left_hand_side_expression_allow_call(&mut self) -> PRes<'a, EN<'a, Ann>> {
@@ -2078,7 +2107,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     }
                     _ => { break }
                 };
-                finish(&node, self, expr)
+                finish(&node, &self.ctx, expr)
             }
         }
         self.state.allow_in = previous_allow_in;
@@ -2107,7 +2136,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     },
                     _ => { break }
                 };
-                finish(&node, self, expr)
+                finish(&node, &self.ctx, expr)
             }
         }
 
@@ -2131,7 +2160,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     },
                     A(_, E::Identifier(_)) | A(_, E::Member(_)) => {
                         try!(self.lex());
-                        Ok(finish(&node, self, E::Update(op, UpdateType::Postfix, Box::new(expr))))
+                        Ok(finish(&node, &self.ctx, E::Update(op, UpdateType::Postfix, Box::new(expr))))
                     },
                     _ => {
                         // tolerate
@@ -2154,7 +2183,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 let node = self.start();
                 try!(self.lex());
                 let expr = try!(self.parse_unary_expression());
-                Ok(finish(&node, self, E::Unary(op, Box::new(expr))))
+                Ok(finish(&node, &self.ctx, E::Unary(op, Box::new(expr))))
             },
             Some(Delete) => {
                 let node = self.start();
@@ -2164,7 +2193,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                         // tolerate
                         Err(Error::StrictDelete)
                     },
-                    expr => Ok(finish(&node, self, E::Unary(Delete, Box::new(expr))))
+                    expr => Ok(finish(&node, &self.ctx, E::Unary(Delete, Box::new(expr))))
                 }
             },
             None => match self.lookahead.as_ref().and_then(updateop) {
@@ -2179,7 +2208,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                             Err(Error::StrictLHSPrefix)
                         },
                         A(_, E::Identifier(_)) | A(_, E::Member(_)) => {
-                            Ok(finish(&node, self, E::Update(op, UpdateType::Prefix, Box::new(expr))))
+                            Ok(finish(&node, &self.ctx, E::Update(op, UpdateType::Prefix, Box::new(expr))))
                         },
                         _ => {
                             // tolerate
@@ -2218,15 +2247,15 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                         if self.binop_stack.len() <= bot_index {
                             // Stack bottom
                             self.binop_stack.push((op__, prec__, left_, left_marker_));
-                            bot = finish(&bot_marker, self, E::Binary(op_, Box::new((bot, right_))));
+                            bot = finish(&bot_marker, &self.ctx, E::Binary(op_, Box::new((bot, right_))));
                         } else {
-                            let expr = finish(&left_marker_, self, E::Binary(op_, Box::new((left_, right_))));
+                            let expr = finish(&left_marker_, &self.ctx, E::Binary(op_, Box::new((left_, right_))));
                             self.binop_stack.push((op__, prec__, expr, left_marker_));
                         }
                     },
                     None => {
                         // Stack bottom
-                        bot = finish(&bot_marker, self, E::Binary(op_, Box::new((bot, right_))));
+                        bot = finish(&bot_marker, &self.ctx, E::Binary(op_, Box::new((bot, right_))));
                     }
                 }
             }
@@ -2247,11 +2276,11 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                         self.binop_stack.push((op_, prec_, expr_, marker_));
                         break
                     }
-                    expr = finish(&marker_, self, E::Binary(op, Box::new((expr_, expr))));
+                    expr = finish(&marker_, &self.ctx, E::Binary(op, Box::new((expr_, expr))));
                     op = op_;
                 }
                 // Stack bottom
-                finish(&bot_marker, self, E::Binary(op, Box::new((bot, expr))))
+                finish(&bot_marker, &self.ctx, E::Binary(op, Box::new((bot, expr))))
             } else { bot }
         } else { bot })
     }
@@ -2302,7 +2331,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 expect!(self, T::Colon);
                 let alternate = try!(self.parse_assignment_expression());
 
-                finish(&node, self, E::Conditional(Box::new((expr, consequent, alternate))))
+                finish(&node, &self.ctx, E::Conditional(Box::new((expr, consequent, alternate))))
             },
             _ => expr
         })
@@ -2329,7 +2358,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     A(_, E::Identifier(_)) | A(_, E::Member(_)) => {
                         try!(self.lex());
                         let right = try!(self.parse_assignment_expression());
-                        Ok(finish(&node, self, E::Assignment(op, Box::new((expr, right)))))
+                        Ok(finish(&node, &self.ctx, E::Assignment(op, Box::new((expr, right)))))
                     },
                     _ => {
                         // tolerate
@@ -2362,7 +2391,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                     }
                 }
 
-                /*let res = */Ok(finish(&node, self, E::Seq(expressions)))/*;
+                /*let res = */Ok(finish(&node, &self.ctx, E::Seq(expressions)))/*;
                 println!("Parsed expression: {:?}", res);
                 res*/
             },
@@ -2395,7 +2424,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         let token = self.lookahead;
         try!(self.lex());
         match token {
-            tk!(T::Identifier(i)) => Ok(finish(&node, self, i)),
+            tk!(T::Identifier(i)) => Ok(finish(&node, &self.ctx, i)),
             Some(token) => {
                 if self.strict && is_strict_mode_reserved(&token.ty) {
                     // tolerate
@@ -2428,7 +2457,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             _ => BindingElement::Uninitialized(id)
         };
 
-        Ok(finish(&node, self, binding))
+        Ok(finish(&node, &self.ctx, binding))
     }
 
     fn parse_variable_declaration_list(&mut self) -> PRes<'a, Vec<BEN<'a, Ann>>> {
@@ -2455,23 +2484,22 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         try!(self.consume_semicolon());
 
-        Ok(finish(&node, self, Statement::Variable(declarations)))
+        Ok(finish(&node, &self.ctx, Statement::Variable(declarations)))
     }
 
     fn parse_empty_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
         expect!(self, T::Semi);
-        Ok(finish(&node, self, Statement::Empty))
+        Ok(finish(&node, &self.ctx, Statement::Empty))
     }
 
     // NOTE: This seems to be redundant.
     // 12.4 Expression Statement
 
     /*fn parse_expression_statement<Ann>(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
     {
         let expr = try!(self.parse_expression());
         expect!(self, T::Semi);
-        Ok(finish(node, self, Statement::Expression(expr)))
+        Ok(finish(node, &self.ctx, Statement::Expression(expr)))
     }*/
 
     // 12.5 If statement
@@ -2492,7 +2520,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             _ => None
         };
 
-        Ok(finish(&node, self, Statement::If(test, Box::new(consequent), alternate)))
+        Ok(finish(&node, &self.ctx, Statement::If(test, Box::new(consequent), alternate)))
     }
 
     // 12.6 Iteration Statements
@@ -2518,7 +2546,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         if let tk!(T::Semi) = self.lookahead { try!(self.lex()); }
 
-        Ok(finish(&node, self, Statement::DoWhile(Box::new(body), test)))
+        Ok(finish(&node, &self.ctx, Statement::DoWhile(Box::new(body), test)))
     }
 
     fn parse_while_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
@@ -2538,7 +2566,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         // NOTE: Should this be done even if the above fails?
         self.state.in_iteration = old_in_iteration;
 
-        Ok(finish(&node, self, Statement::While(test, Box::new(body))))
+        Ok(finish(&node, &self.ctx, Statement::While(test, Box::new(body))))
     }
 
     fn parse_for_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
@@ -2561,7 +2589,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
                 self.state.allow_in = false;
                 let declarations = try!(self.parse_variable_declaration_list());
-                let init_ = finish(&init_, self, VariableDeclaration {
+                let init_ = finish(&init_, &self.ctx, VariableDeclaration {
                     declarations: declarations,
                     kind: VariableDeclarationKind::Var
                 });
@@ -2662,7 +2690,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         // NOTE: Should we make sure this happens even if the above fails?
         self.state.in_iteration = old_in_iteration;
 
-        Ok(finish(&node, self, match inexp {
+        Ok(finish(&node, &self.ctx, match inexp {
             Some((InitFor::Var(left), right)) => Statement::ForIn(left, right, Box::new(body)),
             Some((InitFor::Exp(left), right)) => Statement::ForExpIn(left, right, Box::new(body)),
             None => match init {
@@ -2686,7 +2714,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 return Err(Error::IllegalContinue);
             }
 
-            return Ok(finish(&node, self, Statement::Continue(None)))
+            return Ok(finish(&node, &self.ctx, Statement::Continue(None)))
         }
 
         let label = match self.lookahead {
@@ -2707,7 +2735,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         match label {
             None if !self.state.in_iteration => Err(Error::IllegalContinue),
-            _ => Ok(finish(&node, self, Statement::Continue(label)))
+            _ => Ok(finish(&node, &self.ctx, Statement::Continue(label)))
         }
     }
 
@@ -2724,7 +2752,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 return Err(Error::IllegalBreak);
             }
 
-            return Ok(finish(&node, self, Statement::Break(None)))
+            return Ok(finish(&node, &self.ctx, Statement::Break(None)))
         }
 
         let label = match self.lookahead {
@@ -2745,7 +2773,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         match label {
             None if !(self.state.in_iteration || self.state.in_switch) => Err(Error::IllegalBreak),
-            _ => Ok(finish(&node, self, Statement::Break(label)))
+            _ => Ok(finish(&node, &self.ctx, Statement::Break(label)))
         }
     }
 
@@ -2765,7 +2793,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         if self.has_line_terminator {
             // HACK
-            return Ok(finish(&node, self, Statement::Return(None)));
+            return Ok(finish(&node, &self.ctx, Statement::Return(None)));
         }
 
         if !tmatch!(self.lookahead, T::Semi, T::RBrack) && self.lookahead.is_some() {
@@ -2774,7 +2802,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         try!(self.consume_semicolon());
 
-        return Ok(finish(&node, self, Statement::Return(argument)));
+        return Ok(finish(&node, &self.ctx, Statement::Return(argument)));
     }
 
     // 12.10 The switch statement
@@ -2805,7 +2833,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             }
         }
 
-        Ok(finish(&node, self, SwitchCase { test: test, consequent: consequent }))
+        Ok(finish(&node, &self.ctx, SwitchCase { test: test, consequent: consequent }))
     }
 
     fn parse_switch_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
@@ -2823,7 +2851,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         if let tk!(T::RBrack) = self.lookahead {
             try!(self.lex());
-            return Ok(finish(&node, self, Statement::Switch(discriminant, cases)))
+            return Ok(finish(&node, &self.ctx, Statement::Switch(discriminant, cases)))
         }
 
         let old_in_switch = self.state.in_switch;
@@ -2845,7 +2873,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         expect!(self, T::RBrack);
 
-        Ok(finish(&node, self, Statement::Switch(discriminant, cases)))
+        Ok(finish(&node, &self.ctx, Statement::Switch(discriminant, cases)))
     }
 
     // 12.13 The throw statement
@@ -2859,7 +2887,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         try!(self.consume_semicolon());
 
-        Ok(finish(&node, self, Statement::Throw(argument)))
+        Ok(finish(&node, &self.ctx, Statement::Throw(argument)))
     }
 
     // 12.14 The try statement
@@ -2884,9 +2912,9 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         expect!(self, T::RParen);
         let start = self.start();
         let body = try!(self.parse_block());
-        let body = finish(&start, self, body);
+        let body = finish(&start, &self.ctx, body);
 
-        Ok(finish(&node, self, CatchClause { param: param, body: body }))
+        Ok(finish(&node, &self.ctx, CatchClause { param: param, body: body }))
     }
 
     fn parse_try_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
@@ -2894,7 +2922,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         let start = self.start();
         let block = try!(self.parse_block());
-        let block = finish(&start, self, block);
+        let block = finish(&start, &self.ctx, block);
 
         let handler = match self.lookahead {
             tk!(T::Catch) => Some(try!(self.parse_catch_clause())),
@@ -2907,7 +2935,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                 let start = self.start();
                 let finalizer = try!(self.parse_block());
 
-                Some(finish(&start, self, finalizer))
+                Some(finish(&start, &self.ctx, finalizer))
             },
             _ => None
         };
@@ -2915,7 +2943,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         match (handler, finalizer) {
             (None, None) => Err(Error::NoCatchOrFinally),
             (handler, finalizer) =>
-                Ok(finish(&node, self, Statement::Try(block, handler, finalizer)))
+                Ok(finish(&node, &self.ctx, Statement::Try(block, handler, finalizer)))
         }
     }
 
@@ -2926,7 +2954,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         try!(self.consume_semicolon());
 
-        Ok(finish(&node, self, Statement::Debugger))
+        Ok(finish(&node, &self.ctx, Statement::Debugger))
     }
 
     fn parse_statement(&mut self) -> PRes<'a, SN<'a, Ann>> {
@@ -2934,7 +2962,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         /*let stmt = */match self.lookahead {
             tk!(T::LBrack) => {
                 let body = try!(self.parse_block());
-                Ok(finish(&node, self, Statement::Block(body)))
+                Ok(finish(&node, &self.ctx, Statement::Block(body)))
             },
             tk!(T::Semi) => self.parse_empty_statement(node),
             //tk!(T::LParen) => return self.parse_expression_statement(node),
@@ -2971,13 +2999,13 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
                         // set!
                         self.state.label_set.pop();
                         let name = A(ann, E::Identifier(name));
-                        Ok(finish(&node, self,
+                        Ok(finish(&node, &self.ctx,
                                   Statement::Labeled(name, Box::new(try!(labeled_body)))))
                     },
                     (expr, _) => {
                         try!(self.consume_semicolon());
 
-                        Ok(finish(&node, self, Statement::Expression(expr)))
+                        Ok(finish(&node, &self.ctx, Statement::Expression(expr)))
                     }
                 }
             },
@@ -3061,7 +3089,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         // may not be a good thing...).
         try!(res);
 
-        return Ok(finish(&node, self, body));
+        return Ok(finish(&node, &self.ctx, body));
     }
 
     fn validate_param(&self,
@@ -3111,7 +3139,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
             try!(self.lex());
             let def = try!(self.parse_assignment_expression());
-            params.defaults.push(finish(&node, self, BindingElement::SingleName(param, def)));
+            params.defaults.push(finish(&node, &self.ctx, BindingElement::SingleName(param, def)));
         } else if rest {
             if !tmatch!(self.lookahead, T::RParen) {
                 return Err(Error::ParameterAfterRestParameter);
@@ -3122,7 +3150,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
             params.params.push(param);
         } else {
             // Uninitialized default
-            params.defaults.push(finish(&node, self, BindingElement::Uninitialized(param)));
+            params.defaults.push(finish(&node, &self.ctx, BindingElement::Uninitialized(param)));
         }
         Ok(!tmatch!(self.lookahead, T::RParen))
     }
@@ -3187,7 +3215,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         }
         self.strict = previous_strict;
 
-        Ok(finish(&node, self, SLI::Function(id, F {
+        Ok(finish(&node, &self.ctx, SLI::Function(id, F {
             params: params,
             defaults: defaults,
             rest: rest,
@@ -3198,7 +3226,6 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
     fn parse_function_expression(&mut self,
                                  node: <Ann as Annotation>::Start
                                 ) -> PRes<'a, EN<'a, Ann>>
-        where Ann: Annotation<Ctx=Self>
     {
         expect!(self, T::Function);
         let first_restricted;
@@ -3238,7 +3265,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         }
         self.strict = previous_strict;
 
-        Ok(finish(&node, self, E::Function(id, F {
+        Ok(finish(&node, &self.ctx, E::Function(id, F {
             params: params,
             defaults: defaults,
             rest: rest,
@@ -3251,7 +3278,7 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
 
         match self.lookahead {
             tk!(T::Function) => self.parse_function_declaration(node),
-            _ => self.parse_statement().map( |stmt| finish(&node, self, SLI::Statement(stmt)) )
+            _ => self.parse_statement().map( |stmt| finish(&node, &self.ctx, SLI::Statement(stmt)) )
         }
     }
 
@@ -3298,15 +3325,18 @@ impl<'a, Ann, Start> Ctx<'a, Ann, Start>
         self.strict = false;
 
         let body = try!(self.parse_script_body());
-        Ok(finish(&node, self, body))
+        Ok(finish(&node, &self.ctx, body))
     }
 }
 
 
-pub fn parse<'a, Ann, Start>(root: &'a RootCtx, code: &'a str, /*options*/_: &Options) -> PRes<'a, ScriptN<'a, Ann>>
-        where Ann: Annotation<Ctx=Ctx<'a, Ann, Start>, Start=Start>,
-              //Ann: fmt::Debug,
-    {
+pub fn parse<'a, Ann, Start, AddComment>
+            (root: &'a RootCtx, code: &'a str, options: Options<AddComment>)
+            -> PRes<'a, ScriptN<'a, Ann>>
+    where Ann: Annotation<Ctx=Ctx<'a, Ann, Start>, Start=Start>,
+          //Ann: fmt::Debug,
+          AddComment: FnMut(Token<&'a str>),
+{
     let source = code;
     let index = 0;
     let line_number = if code.len() > 0 { 1 } else { 0 };
@@ -3328,38 +3358,43 @@ pub fn parse<'a, Ann, Start>(root: &'a RootCtx, code: &'a str, /*options*/_: &Op
         last_comment_start: None,
     };
 
-    let mut ctx = Ctx {
-        source: source,
-        index: index,
-        line_number: line_number,
-        line_start: line_start,
+    let mut extra_ctx = ExtraCtx {
+        ctx: Ctx {
+            source: source,
+            index: index,
+            line_number: line_number,
+            line_start: line_start,
 
-        start_index: start_index,
-        start_line_number: start_line_number,
-        start_line_start: start_line_start,
-        //length: length,
-        lookahead: lookahead,
-        state: state,
+            start_index: start_index,
+            start_line_number: start_line_number,
+            start_line_start: start_line_start,
+            //length: length,
+            lookahead: lookahead,
+            state: state,
 
-        scanning: false,
-        has_line_terminator: false,
-        last_index: None,
-        last_line_number: None,
-        last_line_start: None,
-        strict: false,
+            scanning: false,
+            has_line_terminator: false,
+            last_index: None,
+            last_line_number: None,
+            last_line_start: None,
+            strict: false,
 
-        rest: source,
-        byte_index: 0,
-        start_byte_index: 0,
-        root: root,
-        binop_stack: Vec::new(),
+            rest: source,
+            byte_index: 0,
+            start_byte_index: 0,
+            root: root,
+            binop_stack: Vec::new(),
+        },
+        options: options,
     };
 
-    ctx.parse_program()
+    extra_ctx.parse_program()
 }
 
 #[test]
 fn it_works() {
     let root = RootCtx::new();
-    println!("{:?}", parse::<(), ()>(&root, include_str!("../tests/test.js"), &Options).unwrap());
+    println!("{:?}", parse::<(), _, _>(&root, include_str!("../tests/test.js"), Options {
+        add_comment: |_| {}
+    }).unwrap());
 }
