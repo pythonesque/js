@@ -140,6 +140,12 @@ impl<T> fmt::Debug for Token<T>
     }
 }
 
+#[derive(Debug)]
+pub enum Comment<'a> {
+    Line(&'a str),
+    Block { comment: &'a str, line_number: Pos, line_start: Pos },
+}
+
 /*pub enum Loc {
     No,
     Anon,
@@ -549,7 +555,7 @@ impl<'a> Annotation for () {
 
 impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
     where Ann: Annotation<Ctx=Ctx<'a, Ann, Start>, Start=Start>,
-          AddComment: FnMut(Token<&'a str>),
+          AddComment: FnMut(Token<Comment<'a>>),
 {
     #[cold] #[inline(never)]
     fn unexpected_char<T>(&self, opt: Option<(char, &str)>) -> PRes<'a, T> {
@@ -559,16 +565,26 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
         }
     }
 
-    fn skip_single_line_comment(&mut self, /*offset*/_: usize) {
-        //let start = self.index - offset;
-        //let loc =
+    fn skip_single_line_comment(&mut self, offset: Pos) {
+        let start = self.index - offset;
+        let byte_start = self.byte_index;
+
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
             self.index += 1;
             self.byte_index = self.source.char_range_at(self.byte_index).next;
             self.rest = rest;
             if is_line_terminator(ch) {
                 self.has_line_terminator = true;
-                // if extra.comments ...
+                {
+                    let ExtraCtx { options: Options { ref mut add_comment, .. }, ref mut ctx } = *self;
+                    add_comment(Token {
+                        ty: Comment::Line(&ctx.source[byte_start..ctx.byte_index - 1]),
+                        line_number: ctx.line_number,
+                        line_start: ctx.line_start,
+                        start: start,
+                        end: ctx.index - 1,
+                    });
+                }
                 if ch == '\x0D' {
                     if let Some(('\x0A', rest)) = self.rest.slice_shift_char() {
                         self.index += 1;
@@ -582,11 +598,21 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
             }
         }
 
-        // if extra.comments ...
+        let ExtraCtx { options: Options { ref mut add_comment, .. }, ref mut ctx } = *self;
+        add_comment(Token {
+            ty: Comment::Line(&ctx.source[byte_start..ctx.byte_index]),
+            line_number: ctx.line_number,
+            line_start: ctx.line_start,
+            start: start,
+            end: ctx.index,
+        });
     }
 
     fn skip_multi_line_comment(&mut self) -> PRes<'a, ()> {
-        // if extra.comments ...
+        let start = self.index - 2;
+        let byte_start = self.byte_index;
+        let line_number = self.line_number;
+        let line_start = self.line_start;
 
         while let Some((ch, rest)) = self.rest.slice_shift_char() {
             if is_line_terminator(ch) {
@@ -611,7 +637,18 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
                     self.index += 2;
                     self.byte_index += 2;
                     self.rest = rest;
-                    // if extra.comments ...
+                    let ExtraCtx { options: Options { ref mut add_comment, .. }, ref mut ctx } = *self;
+                    add_comment(Token {
+                        ty: Comment::Block {
+                            comment: &ctx.source[byte_start..ctx.byte_index - 2],
+                            line_start: ctx.line_start,
+                            line_number: ctx.line_number,
+                        },
+                        line_number: line_number,
+                        line_start: line_start,
+                        start: start,
+                        end: ctx.index,
+                    });
                     return Ok(());
                 }
                 self.index += 1;
@@ -623,6 +660,8 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
                 self.rest = rest;
             }
         }
+
+        // extra.errors ...
 
         Err(Error::UnexpectedEOF)
     }
@@ -1678,7 +1717,7 @@ enum InitFor<'a, Ann> {
 
 impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
     where Ann: Annotation<Ctx=Ctx<'a, Ann, Start>, Start=Start>,
-          AddComment: FnMut(Token<&'a str>),
+          AddComment: FnMut(Token<Comment<'a>>),
           //Ann: fmt::Debug,
 {
     #[cold] #[inline(never)]
@@ -3335,7 +3374,7 @@ pub fn parse<'a, Ann, Start, AddComment>
             -> PRes<'a, ScriptN<'a, Ann>>
     where Ann: Annotation<Ctx=Ctx<'a, Ann, Start>, Start=Start>,
           //Ann: fmt::Debug,
-          AddComment: FnMut(Token<&'a str>),
+          AddComment: FnMut(Token<Comment<'a>>),
 {
     let source = code;
     let index = 0;
@@ -3395,6 +3434,6 @@ pub fn parse<'a, Ann, Start, AddComment>
 fn it_works() {
     let root = RootCtx::new();
     println!("{:?}", parse::<(), _, _>(&root, include_str!("../tests/test.js"), Options {
-        add_comment: |_| {}
+        add_comment: |comment| println!("{:?}", comment)
     }).unwrap());
 }

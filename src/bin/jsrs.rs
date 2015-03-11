@@ -123,20 +123,21 @@ fn parse<'a, I, Ann, Start>
     *res = Some(match options.flow {
         Some(_) => {
             let mut mode = None;
-            let result = {
-                let options = js::Options {
-                    add_comment: |js::Token { ty, .. }: js::Token<&str>| {
-                        if let None = mode {
-                            mode = Some(if ty.words().any( |word| word == "@flow" ) {
-                                Mode::Flow
-                            } else {
-                                Mode::Unchecked
-                            });
-                        }
-                    },
-                };
-                js::parse::<Ann, Start, _>(ctx, string, options)
-            };
+            let result = js::parse::<Ann, Start, _>(ctx, string, js::Options {
+                add_comment: |js::Token { ty, .. }| {
+                    if let None = mode {
+                        mode = Some(if match ty {
+                            js::Comment::Block { comment , .. } => comment,
+                            js::Comment::Line(comment) => comment,
+                        }.words().any( |word| match word {
+                            "@flow" | "@lanetixFlowInterface" => true, _ => false } ) {
+                            Mode::Flow
+                        } else {
+                            Mode::Unchecked
+                        });
+                    }
+                },
+            });
             Res { mode: mode.unwrap_or(Mode::Unchecked), result: result }
         },
         None => {

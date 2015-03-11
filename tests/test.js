@@ -1,4 +1,8 @@
 // Testing comments
+/*
+ * testing
+ * multiline
+ * comment*/
 "use stri\143t";;;;
 
 notification = function() {
@@ -30,4 +34,4 @@ fun\u0063tion foo(x, y = function(x,rest) { bar }, ... foo) {"use strict";
   }
 }
 
-var x = 3, y = (4), z;
+var x = 3, y = (4), z;//end
