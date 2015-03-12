@@ -109,6 +109,7 @@ struct Options {
     flow: Option<Flow>,
     unbuffered: bool,
     shebang: bool,
+    names: bool,
 }
 
 fn parse<'a, I, Ann, Start>
@@ -246,11 +247,21 @@ fn run<Ann, Start>(options: &Options, matches: &getopts::Matches)
 
     let ref mut error = io::stderr();
 
+    let mut names;
     let mut initial = matches.free
         .iter()
         .map( |p| (Path::new(&*p), Data(js::RootCtx::new(), String::new(), None::<Res<Ann>>)) )
         .collect::<Vec<_>>();
-    if matches.free.is_empty() {
+
+    if options.names {
+        names = String::new();
+        io::stdin().read_to_string(&mut names).unwrap();
+        initial.extend(names
+            .lines()
+            .map( |p| (Path::new(&*p), Data(js::RootCtx::new(), String::new(), None)) ));
+    }
+
+    if initial.is_empty() {
         let mut data = Data(js::RootCtx::new(), String::new(), None);
         let stdin = io::stdin();
         parse::<_, Ann, Start>(options, stdin, &mut data).unwrap();
@@ -264,8 +275,9 @@ fn run<Ann, Start>(options: &Options, matches: &getopts::Matches)
         }
     } else {
         let (tx, rx) = mpsc::channel();
+        let chunk_size = cmp::max(initial.len() / os::num_cpus(), 1);
         let _join_guards = initial
-            .chunks_mut(cmp::max(matches.free.len() / os::num_cpus(), 1))
+            .chunks_mut(chunk_size)
             .map( |chunk| {
                 let tx = tx.clone();
                 thread::scoped( move || {
@@ -318,6 +330,7 @@ pub fn main() {
         optopt("", "flow", "detect @flow annotations (no [default], yes, only, ignore)", "FLOW"),
         optflag("", "unbuffered", "don't buffer output (it is always buffered per line)"),
         optflag("", "shebang", "ignore #! at start of file"),
+        optflag("", "names", "interpret stdin as file names to parse"),
     ];
     let matches = match getopts(&args.collect::<Vec<_>>(), &opts) {
         Ok(m) => { m }
@@ -337,6 +350,7 @@ pub fn main() {
         }),
         unbuffered: matches.opt_present("unbuffered"),
         shebang: matches.opt_present("shebang"),
+        names: matches.opt_present("names"),
     };
     if matches.opt_present("h") {
         print_usage(&*program, &opts);
