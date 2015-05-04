@@ -1,7 +1,8 @@
-#![feature(core,collections,rustc_private,unicode)]
+#![feature(float_from_str_radix,rustc_private,str_char,unicode)]
 
 extern crate arena;
-extern crate unicode;
+extern crate num;
+extern crate rustc_unicode as unicode;
 
 use arena::TypedArena;
 
@@ -44,11 +45,13 @@ use ast::SwitchCaseNode as SCN;
 use ast::Tok as T;
 use ast::VariableDeclarationNode as VDN;
 
+use num::NumCast;
+
 use std::char;
-use std::error::FromError;
+use std::f64;
 use std::fmt;
 use std::mem;
-use std::num::{self, Int, NumCast, ParseFloatError};
+use std::num::ParseFloatError;
 use std::ops::{Deref, DerefMut};
 
 use unicode::str::Utf16Encoder;
@@ -95,6 +98,9 @@ pub struct RootCtx {
     ident_arena: TypedArena<String>,
 }
 
+// FIXME: Remove when `TypedArena` becomes `Send`.
+unsafe impl Send for RootCtx {}
+
 pub struct Ctx<'a, Ann, Start>
 {
     source: &'a str,
@@ -123,7 +129,7 @@ pub struct Ctx<'a, Ann, Start>
     binop_stack: Vec<(BinOp, Prec, EN<'a, Ann>, Start)>,
 }
 
-#[derive(Copy)]
+#[derive(Clone, Copy)]
 pub struct Token<T> {
     pub ty: T,
     pub line_number: Pos,
@@ -214,15 +220,15 @@ pub enum Error<Tok> {
     IllegalLineStart,
 }
 
-impl<T> FromError<ParseFloatError> for Error<T> {
-    fn from_error(err: ParseFloatError) -> Self {
+impl<T> From<ParseFloatError> for Error<T> {
+    fn from(err: ParseFloatError) -> Self {
         Error::ParseFloat(err)
     }
 }
 
-impl<'a> FromError<Error<Token<T<'a>>>> for Error<Box<Token<T<'a>>>> {
+impl<'a> From<Error<Token<T<'a>>>> for Error<Box<Token<T<'a>>>> {
     #[cold] #[inline(never)]
-    fn from_error(err: Error<Token<T<'a>>>) -> Self {
+    fn from(err: Error<Token<T<'a>>>) -> Self {
         use self::Error::*;
 
         match err {
@@ -548,7 +554,7 @@ impl<'a, Ann, Start, AddComment> DerefMut for ExtraCtx<'a, Ann, Start, AddCommen
     fn deref_mut(&mut self) -> &mut Ctx<'a, Ann, Start> { &mut self.ctx }
 }
 
-impl<'a> Annotation for () {
+impl<'a> Annotation<'a> for () {
     type Ctx = Ctx<'a, (), ()>;
     type Start = ();
 
@@ -562,7 +568,7 @@ impl<'a> Annotation for () {
 }
 
 impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
-    where Ann: Annotation<Ctx=Ctx<'a, Ann, Start>, Start=Start>,
+    where Ann: Annotation<'a, Ctx=Ctx<'a, Ann, Start>, Start=Start>,
           AddComment: FnMut(Token<Comment<'a>>),
 {
     #[cold] #[inline(never)]
@@ -1181,7 +1187,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
             if is_identifier_start(ch as u32) { return Err(Error::UnexpectedChar(ch)) }
         }
         Ok(Token {
-            ty: T::NumericLiteral(try!(num::from_str_radix(&self.source[byte_begin..self.byte_index], 16))),
+            ty: T::NumericLiteral(try!(f64::from_str_radix(&self.source[byte_begin..self.byte_index], 16))),
             line_number: self.line_number,
             line_start: self.line_start,
             start: start,
@@ -1202,7 +1208,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
             if is_identifier_start(ch as u32) || is_decimal_digit(ch) { return Err(Error::UnexpectedChar(ch)) }
         }
         Ok(Token {
-            ty: T::NumericLiteral(try!(num::from_str_radix(&self.source[byte_begin..self.byte_index], 2))),
+            ty: T::NumericLiteral(try!(f64::from_str_radix(&self.source[byte_begin..self.byte_index], 2))),
             line_number: self.line_number,
             line_start: self.line_start,
             start: start,
@@ -1233,7 +1239,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
             if is_identifier_start(ch as u32) || is_decimal_digit(ch) { return Err(Error::UnexpectedChar(ch)) }
         }
         Ok(Token {
-            ty: tag(try!(num::from_str_radix(&self.source[byte_begin..self.byte_index], 8))),
+            ty: tag(try!(f64::from_str_radix(&self.source[byte_begin..self.byte_index], 8))),
             line_number: self.line_number,
             line_start: self.line_start,
             start: start,
@@ -1724,7 +1730,7 @@ enum InitFor<'a, Ann> {
 }
 
 impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
-    where Ann: Annotation<Ctx=Ctx<'a, Ann, Start>, Start=Start>,
+    where Ann: Annotation<'a, Ctx=Ctx<'a, Ann, Start>, Start=Start>,
           AddComment: FnMut(Token<Comment<'a>>),
           //Ann: fmt::Debug,
 {
@@ -1743,8 +1749,8 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
         }
     }
 
-    fn start(&self) -> <Ann as Annotation>::Start {
-        <Ann as Annotation>::start(self)
+    fn start(&self) -> Ann::Start {
+        Ann::start(self)
     }
 
     fn expect_comma_separator(&mut self) -> PRes<'a, ()> {
@@ -1801,7 +1807,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
     // 11.1.5 Object Initializer
 
     fn parse_property_function(&mut self,
-                               node: <Ann as Annotation>::Start,
+                               node: Ann::Start,
                                Params { params, defaults, stricted, first_restricted,
                                         rest }: Params<'a, Ann>,
                               ) -> PRes<'a, EN<'a, Ann>> {
@@ -1810,9 +1816,9 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
 
         if self.strict {
             // tolerate
-            if let Some(e) = first_restricted { return Err(FromError::from_error(e)) }
+            if let Some(e) = first_restricted { return Err(From::from(e)) }
             // tolerate
-            if let Some(e) = stricted { return Err(FromError::from_error(e)) }
+            if let Some(e) = stricted { return Err(From::from(e)) }
         }
 
         self.strict = previous_strict;
@@ -1893,7 +1899,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
     fn try_parse_method_definition(&mut self,
                                    token: Option<Token<T<'a>>>,
                                    key: PN<'a, Ann>,
-                                   node: &<Ann as Annotation>::Start,
+                                   node: &Ann::Start,
                                   ) -> PRes<'a, Result<PDN<'a, Ann>, PN<'a, Ann>>> {
         Ok(match token {
             tk!(T::Identifier("get")) if self.lookahead_property_name() => {
@@ -2524,7 +2530,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
         Ok(list)
     }
 
-    fn parse_variable_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+    fn parse_variable_statement(&mut self, node: Ann::Start) -> PRes<'a, SN<'a, Ann>> {
         expect!(self, T::Var);
 
         let declarations = try!(self.parse_variable_declaration_list());
@@ -2534,7 +2540,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
         Ok(finish(&node, &self.ctx, Statement::Variable(declarations)))
     }
 
-    fn parse_empty_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+    fn parse_empty_statement(&mut self, node: Ann::Start) -> PRes<'a, SN<'a, Ann>> {
         expect!(self, T::Semi);
         Ok(finish(&node, &self.ctx, Statement::Empty))
     }
@@ -2542,7 +2548,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
     // NOTE: This seems to be redundant.
     // 12.4 Expression Statement
 
-    /*fn parse_expression_statement<Ann>(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>>
+    /*fn parse_expression_statement<Ann>(&mut self, node: Ann::Start) -> PRes<'a, SN<'a, Ann>>
     {
         let expr = try!(self.parse_expression());
         expect!(self, T::Semi);
@@ -2551,7 +2557,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
 
     // 12.5 If statement
 
-    fn parse_if_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+    fn parse_if_statement(&mut self, node: Ann::Start) -> PRes<'a, SN<'a, Ann>> {
         expect!(self, T::If);
 
         expect!(self, T::LParen);
@@ -2572,7 +2578,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
 
     // 12.6 Iteration Statements
 
-    fn parse_do_while_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+    fn parse_do_while_statement(&mut self, node: Ann::Start) -> PRes<'a, SN<'a, Ann>> {
         expect!(self, T::Do);
 
         let old_in_iteration = self.state.in_iteration;
@@ -2596,7 +2602,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
         Ok(finish(&node, &self.ctx, Statement::DoWhile(Box::new(body), test)))
     }
 
-    fn parse_while_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+    fn parse_while_statement(&mut self, node: Ann::Start) -> PRes<'a, SN<'a, Ann>> {
         expect!(self, T::While);
 
         expect!(self, T::LParen);
@@ -2616,7 +2622,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
         Ok(finish(&node, &self.ctx, Statement::While(test, Box::new(body))))
     }
 
-    fn parse_for_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+    fn parse_for_statement(&mut self, node: Ann::Start) -> PRes<'a, SN<'a, Ann>> {
         let previous_allow_in = self.state.allow_in;
         let mut inexp = None;
 
@@ -2751,7 +2757,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
 
     // 12.7 The continue statement
 
-    fn parse_continue_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+    fn parse_continue_statement(&mut self, node: Ann::Start) -> PRes<'a, SN<'a, Ann>> {
         expect!(self, T::Continue);
 
         // catch the very common case first: immediately a semicolon
@@ -2789,7 +2795,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
 
     // 12.8 The break statement
 
-    fn parse_break_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+    fn parse_break_statement(&mut self, node: Ann::Start) -> PRes<'a, SN<'a, Ann>> {
         expect!(self, T::Break);
 
         // catch the very common case first: immediately a semicolon
@@ -2826,7 +2832,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
 
     // 12.9 The return statement
 
-    fn parse_return_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+    fn parse_return_statement(&mut self, node: Ann::Start) -> PRes<'a, SN<'a, Ann>> {
         let mut argument = None;
 
         expect!(self, T::Return);
@@ -2883,7 +2889,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
         Ok(finish(&node, &self.ctx, SwitchCase { test: test, consequent: consequent }))
     }
 
-    fn parse_switch_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+    fn parse_switch_statement(&mut self, node: Ann::Start) -> PRes<'a, SN<'a, Ann>> {
         expect!(self, T::Switch);
 
         expect!(self, T::LParen);
@@ -2925,7 +2931,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
 
     // 12.13 The throw statement
 
-    fn parse_throw_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+    fn parse_throw_statement(&mut self, node: Ann::Start) -> PRes<'a, SN<'a, Ann>> {
         expect!(self, T::Throw);
 
         if self.has_line_terminator { return Err(Error::NewlineAfterThrow) }
@@ -2964,7 +2970,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
         Ok(finish(&node, &self.ctx, CatchClause { param: param, body: body }))
     }
 
-    fn parse_try_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+    fn parse_try_statement(&mut self, node: Ann::Start) -> PRes<'a, SN<'a, Ann>> {
         expect!(self, T::Try);
 
         let start = self.start();
@@ -2996,7 +3002,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
 
     // 12.15 The debugger statement
 
-    fn parse_debugger_statement(&mut self, node: <Ann as Annotation>::Start) -> PRes<'a, SN<'a, Ann>> {
+    fn parse_debugger_statement(&mut self, node: Ann::Start) -> PRes<'a, SN<'a, Ann>> {
         expect!(self, T::Debugger);
 
         try!(self.consume_semicolon());
@@ -3094,7 +3100,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
                         T::StringLiteral("use strict") => {
                             self.strict = true;
                             // tolerate
-                            if let Some(e) = first_restricted { return Err(FromError::from_error(e)) }
+                            if let Some(e) = first_restricted { return Err(From::from(e)) }
                         },
                         T::OctalStringLiteral(_) if first_restricted.is_none() => {
                             first_restricted = Some(Error::StrictOctalLiteral(token));
@@ -3226,7 +3232,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
     }
 
     fn parse_function_declaration(&mut self,
-                                  node: <Ann as Annotation>::Start
+                                  node: Ann::Start
                                  ) -> PRes<'a, SLIN<'a, Ann>> {
         expect!(self, T::Function);
         let id;
@@ -3256,9 +3262,9 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
         let previous_strict = self.strict;
         let body = try!(self.parse_function_source_elements());
         if self.strict {
-            if let Some(e) = first_restricted { return Err(FromError::from_error(e)) }
+            if let Some(e) = first_restricted { return Err(From::from(e)) }
             // tolerate
-            if let Some(e) = stricted { return Err(FromError::from_error(e)) }
+            if let Some(e) = stricted { return Err(From::from(e)) }
         }
         self.strict = previous_strict;
 
@@ -3271,7 +3277,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
     }
 
     fn parse_function_expression(&mut self,
-                                 node: <Ann as Annotation>::Start
+                                 node: Ann::Start
                                 ) -> PRes<'a, EN<'a, Ann>>
     {
         expect!(self, T::Function);
@@ -3306,9 +3312,9 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
         let previous_strict = self.strict;
         let body = try!(self.parse_function_source_elements());
         if self.strict {
-            if let Some(e) = first_restricted { return Err(FromError::from_error(e)) }
+            if let Some(e) = first_restricted { return Err(From::from(e)) }
             // tolerate
-            if let Some(e) = stricted { return Err(FromError::from_error(e)) }
+            if let Some(e) = stricted { return Err(From::from(e)) }
         }
         self.strict = previous_strict;
 
@@ -3342,7 +3348,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
                         T::StringLiteral("use strict") => {
                             self.strict = true;
                             // tolerate
-                            if let Some(e) = first_restricted { return Err(FromError::from_error(e)) }
+                            if let Some(e) = first_restricted { return Err(From::from(e)) }
                         },
                         T::OctalStringLiteral(_) if first_restricted.is_none() => {
                             first_restricted = Some(Error::StrictOctalLiteral(token));
@@ -3380,7 +3386,7 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
 pub fn parse<'a, Ann, Start, AddComment>
             (root: &'a RootCtx, code: &'a str, options: Options<AddComment>)
             -> PRes<'a, ScriptN<'a, Ann>>
-    where Ann: Annotation<Ctx=Ctx<'a, Ann, Start>, Start=Start>,
+    where Ann: Annotation<'a, Ctx=Ctx<'a, Ann, Start>, Start=Start>,
           //Ann: fmt::Debug,
           AddComment: FnMut(Token<Comment<'a>>),
 {

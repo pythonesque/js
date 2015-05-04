@@ -1,8 +1,10 @@
-#![feature(core, exit_status, io, libc, rustc_private, str_words, os, path)]
+#![feature(exit_status, libc, rustc_private, scoped)]
 
 extern crate getopts;
 extern crate js;
 extern crate libc;
+extern crate num;
+extern crate num_cpus;
 
 use getopts::{getopts, optflag, optopt, OptGroup};
 use js::ast::Annotation;
@@ -11,25 +13,24 @@ use std::env;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
-use std::num::NumCast;
-use std::os;
+use num::NumCast;
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 
-#[derive(Copy,Debug)]
+#[derive(Clone,Copy,Debug)]
 struct Loc {
     line: js::Pos,
     column: js::Pos,
 }
 
-#[derive(Copy,Debug)]
+#[derive(Clone,Copy,Debug)]
 struct MyStart {
     start: Loc,
     start_index: js::Pos,
 }
 
-#[derive(Copy,Debug)]
+#[derive(Clone,Copy,Debug)]
 struct MyAnnot {
     range: (js::Pos, js::Pos),
     start: Loc,
@@ -38,7 +39,7 @@ struct MyAnnot {
 
 type Error<'a> = js::Error<Box<js::Token<js::ast::Tok<'a>>>>;
 
-impl<'a> Annotation for MyAnnot {
+impl<'a> Annotation<'a> for MyAnnot {
     type Ctx = js::Ctx<'a, MyAnnot, MyStart>;
     type Start = MyStart;
 
@@ -77,7 +78,7 @@ impl<'a> Annotation for MyAnnot {
     }
 }
 
-#[derive(Copy,PartialEq)]
+#[derive(Clone,Copy,PartialEq)]
 enum Mode {
     Unchecked,
     Flow,
@@ -90,11 +91,7 @@ struct Res<'a, Ann> {
 
 struct Data<'a, Ann>(js::RootCtx, String, Option<Res<'a, Ann>>);
 
-unsafe impl<'a, Ann> Send for Data<'a, Ann>
-    where Ann: Send
-    {}
-
-#[derive(Copy,PartialEq)]
+#[derive(Clone,Copy,PartialEq)]
 enum Flow {
     Check,
     Ignore,
@@ -112,17 +109,13 @@ struct Options {
     names: bool,
 }
 
-fn parse<'a, I, Ann, Start>
-        (options: &Options, mut input: I, data: &'a mut Data<Ann>)
-        -> io::Result<()>
-    where I: Read + 'a,
-          Ann: 'a,
-          Ann: Annotation<Ctx=js::Ctx<'a, Ann, Start>, Start=Start>,
+fn parse<'a, Ann, Start>
+        (options: &Options,
+         ctx: &'a js::RootCtx, string: &'a str, res: &mut Option<Res<'a, Ann>>)
+    where Ann: 'a,
+          Ann: Annotation<'a, Ctx=js::Ctx<'a, Ann, Start>, Start=Start>,
           //Ann: fmt::Debug,
 {
-    let Data(ref ctx, ref mut string, ref mut res) = *data;
-    try!(input.read_to_string(string));
-    drop(input);
     let (string, index) = if options.shebang && string.starts_with("#!") {
         // The reason we have to check for overflow here is that we need to do a conversion to
         // Pos from usize, which could potentially fail.  Normally this is not necessary because
@@ -141,11 +134,11 @@ fn parse<'a, I, Ann, Start>
                     result: Err(js::Error::PosOverflow),
                     mode: Mode::Unchecked,
                 });
-                return Ok(());
+                return;
             }
         }
     } else {
-        (&**string, 0)
+        (string, 0)
     };
     *res = Some(match options.flow {
         Some(_) => {
@@ -156,7 +149,7 @@ fn parse<'a, I, Ann, Start>
                         mode = Some(if match ty {
                             js::Comment::Block { comment , .. } => comment,
                             js::Comment::Line(comment) => comment,
-                        }.words().any( |word| match word {
+                        }.split_whitespace().any( |word| match word {
                             "@flow" | "@lanetixFlowInterface" => true, _ => false } ) {
                             Mode::Flow
                         } else {
@@ -182,26 +175,24 @@ fn parse<'a, I, Ann, Start>
             }
         }
     });
-    Ok(())
 }
 
 fn display<'a, O, Ann, Start>
           (options: &Options,
            path: Option<&Path>,
-           data: io::Result<&'a Data<'a, Ann>>,
+           result: io::Result<&'a Option<Res<Ann>>>,
            output: &mut O,
           ) -> io::Result<io::Result<Result<(), &'a Error<'a>>>>
     where O: Write,
           Ann: 'a,
           Ann: fmt::Debug,
-          Ann: Annotation<Ctx=js::Ctx<'a, Ann, Start>, Start=Start>,
+          Ann: Annotation<'a, Ctx=js::Ctx<'a, Ann, Start>, Start=Start>,
 {
-    match data {
-        Ok(ref data) => {
+    match result {
+        Ok(ref result) => {
             // Note: if the file was encoded successfully, it shouldn't be possible for the result
             // to be None here.  But even if it were (because of an accidental panic, say), that
             // should have already killed the display thread.
-            let Data(_, _, ref result) = **data;
             let result = result.as_ref().unwrap();
             if (!options.only_errors || result.result.is_err()) &&
                !(options.flow == Some(Flow::Ignore) && result.mode == Mode::Flow) &&
@@ -239,7 +230,7 @@ fn print_usage(program: &str, opts: &[OptGroup]) {
 }
 
 fn run<Ann, Start>(options: &Options, matches: &getopts::Matches)
-    where Ann: for<'a> Annotation<Ctx=js::Ctx<'a, Ann, Start>, Start=Start>,
+    where Ann: for<'a> Annotation<'a, Ctx=js::Ctx<'a, Ann, Start>, Start=Start>,
           Ann: fmt::Debug,
           Ann: Send,
 {
@@ -262,11 +253,13 @@ fn run<Ann, Start>(options: &Options, matches: &getopts::Matches)
     }
 
     if initial.is_empty() {
-        let mut data = Data(js::RootCtx::new(), String::new(), None);
-        let stdin = io::stdin();
-        parse::<_, Ann, Start>(options, stdin, &mut data).unwrap();
+        let ctx = js::RootCtx::new();
+        let mut string = String::new();
+        io::stdin().read_to_string(&mut string).unwrap();
+        let mut res = None;
+        parse::<Ann, Start>(options, &ctx, &string, &mut res);
         let ref mut output = BufWriter::new(output.lock());
-        match display(options, None, Ok(&data), output) {
+        match display(options, None, Ok(&res), output) {
             Ok(r) => match r {
                 Ok(r) => if let Err(_) = r { env::set_exit_status(1) },
                 Err(_) => env::set_exit_status(2),
@@ -274,16 +267,27 @@ fn run<Ann, Start>(options: &Options, matches: &getopts::Matches)
             Err(_) => env::set_exit_status(3),
         }
     } else {
+        let chunk_size = cmp::max(initial.len() / num_cpus::get(), 1);
         let (tx, rx) = mpsc::channel();
-        let chunk_size = cmp::max(initial.len() / os::num_cpus(), 1);
-        let _join_guards = initial
+        let _join_guards =
+            initial
             .chunks_mut(chunk_size)
+            .into_iter()
             .map( |chunk| {
                 let tx = tx.clone();
                 thread::scoped( move || {
-                    for &mut (ref path, ref mut data) in chunk.iter_mut() {
-                        let res = File::open(path).and_then( |file| parse(options, file, data));
-                        try!(tx.send((path, res.and(Ok(data)))));
+                    for &mut (ref path, Data(ref mut ctx, ref mut string, ref mut result)) in chunk {
+                        let res = File::open(path)
+                            .and_then( |mut file| file.read_to_string(&mut *string));
+                        let ctx = &mut *ctx;
+                        let string = &*string;
+                        try!(tx.send((path, match res {
+                            Ok(_) => {
+                                parse(options, ctx, string, result);
+                                Ok((string, result))
+                            },
+                            Err(e) => Err(e)
+                        })));
                     }
                     Ok::<_, mpsc::SendError<_>>(())
                 } )
@@ -293,7 +297,7 @@ fn run<Ann, Start>(options: &Options, matches: &getopts::Matches)
             let ref mut output = BufWriter::new(output.lock());
                 rx.iter()
                     .map( |(path, data)|
-                          display(options, Some(path), data.map( |&mut ref x| x), output) )
+                          display(options, Some(path), data.map( |(_, &mut ref x)| x), output) )
                     .collect::<io::Result<Vec<_>>>()
             } ).join() {
             Ok(v) => {

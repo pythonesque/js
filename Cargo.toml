@@ -3,3 +3,7 @@
 name = "js"
 version = "0.0.1"
 authors = ["Joshua Yanovski <pythonesque@gmail.com>"]
+
+[dependencies]
+num = "0.1.24"
+num_cpus = "0.2.4"

@@ -9,7 +9,7 @@ impl<Ann, T> fmt::Debug for Annotated<Ann, T> where T: fmt::Debug {
     }
 }
 
-pub trait Annotation {
+pub trait Annotation<'a> {
     type Ctx;
     type Start;
 
@@ -17,11 +17,11 @@ pub trait Annotation {
     fn finish(start: &Self::Start, ctx: &Self::Ctx) -> Self;
 }
 
-pub fn finish<'a, Ann, T>(start: &'a <Ann as Annotation>::Start,
-                          ctx: &'a <Ann as Annotation>::Ctx,
-                          inner: T,
-                         ) -> Annotated<Ann, T>
-    where Ann: Annotation,
+pub fn finish<'a, 'b, Ann, T>(start: &'a Ann::Start,
+                              ctx: &'a Ann::Ctx,
+                              inner: T,
+                             ) -> Annotated<Ann, T>
+    where Ann: Annotation<'b>,
 {
     Annotated(Annotation::finish(start, ctx), inner)
 }
@@ -177,7 +177,7 @@ pub enum StatementListItem<'a, Ann> {
 pub type ScriptNode<'a, Ann> = Annotated<Ann, Script<'a, Ann>>;
 pub type Script<'a, Ann> = Vec<StatementListItemNode<'a, Ann>>;
 
-#[derive(Copy, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum AssignOp {
     Eq,
     TimesEq, DivEq, ModEq, PlusEq, MinusEq,
@@ -185,7 +185,7 @@ pub enum AssignOp {
     AndEq, XorEq, OrEq,
 }
 
-#[derive(Copy, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum BinOp {
     OrOr,
     AndAnd,
@@ -200,7 +200,7 @@ pub enum BinOp {
     Times, Div, Mod,
 }
 
-#[derive(Copy, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum UnOp {
     Delete,
     Void,
@@ -211,19 +211,19 @@ pub enum UnOp {
     Not,
 }
 
-#[derive(Copy, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum UpdateType {
     Prefix,
     Postfix,
 }
 
-#[derive(Copy, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum UpdateOp {
     PlusPlus,
     MinusMinus,
 }
 
-#[derive(Copy, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Tok<'a> {
     EOF,
     Identifier(&'a str),
