@@ -567,8 +567,8 @@ impl<'a> Annotation<'a> for () {
     }
 }
 
-impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
-    where Ann: Annotation<'a, Ctx=Ctx<'a, Ann, Start>, Start=Start>,
+impl<'a, 'b, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
+    where Ann: Annotation<'b, Ctx=Ctx<'a, Ann, Start>, Start=Start>,
           AddComment: FnMut(Token<Comment<'a>>),
 {
     #[cold] #[inline(never)]
@@ -1729,8 +1729,8 @@ enum InitFor<'a, Ann> {
     Exp(EN<'a, Ann>),
 }
 
-impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
-    where Ann: Annotation<'a, Ctx=Ctx<'a, Ann, Start>, Start=Start>,
+impl<'a, 'b, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
+    where Ann: Annotation<'b, Ctx=Ctx<'a, Ann, Start>, Start=Start>,
           AddComment: FnMut(Token<Comment<'a>>),
           //Ann: fmt::Debug,
 {
@@ -3383,10 +3383,10 @@ impl<'a, Ann, Start, AddComment> ExtraCtx<'a, Ann, Start, AddComment>
 }
 
 
-pub fn parse<'a, Ann, Start, AddComment>
+pub fn parse<'a, 'b, Ann, Start, AddComment>
             (root: &'a RootCtx, code: &'a str, options: Options<AddComment>)
             -> PRes<'a, ScriptN<'a, Ann>>
-    where Ann: Annotation<'a, Ctx=Ctx<'a, Ann, Start>, Start=Start>,
+    where Ann: Annotation<'b, Ctx=Ctx<'a, Ann, Start>, Start=Start>,
           //Ann: fmt::Debug,
           AddComment: FnMut(Token<Comment<'a>>),
 {

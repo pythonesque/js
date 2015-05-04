@@ -109,11 +109,10 @@ struct Options {
     names: bool,
 }
 
-fn parse<'a, Ann, Start>
+fn parse<'a, 'b, Ann, Start>
         (options: &Options,
          ctx: &'a js::RootCtx, string: &'a str, res: &mut Option<Res<'a, Ann>>)
-    where Ann: 'a,
-          Ann: Annotation<'a, Ctx=js::Ctx<'a, Ann, Start>, Start=Start>,
+    where Ann: Annotation<'b, Ctx=js::Ctx<'a, Ann, Start>, Start=Start>,
           //Ann: fmt::Debug,
 {
     let (string, index) = if options.shebang && string.starts_with("#!") {
